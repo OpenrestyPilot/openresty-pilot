@@ -138,8 +138,8 @@ async function onSave() {
 <template>
   <Drawer>
     <div class="flex h-full flex-col gap-3">
-      <Alert
-        :message="`已勾选 ${statText} 项权限；勾选菜单将自动勾选其全部操作点。`"
+          <Alert
+        :message="`已勾选 ${statText} 项权限。发布、节点运维、系统运维和审计权限彼此独立。`"
         show-icon
         type="info"
       />
@@ -163,6 +163,7 @@ async function onSave() {
                 </Checkbox>
                 <Tag class="!m-0" color="blue">{{ node.key }}</Tag>
               </div>
+              <div v-if="node.description" class="px-3 pt-2 text-xs text-gray-500">{{ node.description }}</div>
               <div class="space-y-1.5 px-3 py-2">
                 <template v-for="child in node.children ?? []" :key="child.key">
                   <div v-if="child.children && child.children.length > 0" class="rounded bg-gray-50 p-2 dark:bg-gray-800/60">

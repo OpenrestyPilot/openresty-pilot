@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import type { OrpSetting, SettingPayload, SettingType } from '#/api';
 
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 
 import { useVbenModal } from '@vben/common-ui';
 
@@ -10,6 +10,7 @@ import {
   EyeOutlined,
 } from '@ant-design/icons-vue';
 import { Alert, Button, Space, message } from 'ant-design-vue';
+import { useAccessStore } from '@vben/stores';
 
 import { useVbenForm, z } from '#/adapter/form';
 import {
@@ -23,6 +24,11 @@ import { useDirtyGuard } from '#/composables/use-dirty-guard';
 defineOptions({ name: 'SettingFormModal' });
 
 const emit = defineEmits<{ success: [] }>();
+
+const canReadSecrets = computed(() => {
+  const codes = useAccessStore().accessCodes;
+  return codes.includes('*') || codes.includes('orp:secrets:read');
+});
 
 const isEdit = ref(false);
 const editId = ref(0);
@@ -217,7 +223,7 @@ const [Modal, modalApi] = useVbenModal<{ record?: OrpSetting }>({
           value: record.value,
         });
         // 敏感项：打开时拉取明文回填，避免脱敏值被误存
-        if (record.isSensitive) {
+        if (record.isSensitive && canReadSecrets.value) {
           plainLoading.value = true;
           try {
             const plain = await getSettingPlainApi(record.id);
@@ -247,7 +253,7 @@ async function onReset() {
 
 /** 敏感值明文/脱敏切换 */
 async function togglePlain() {
-  if (!isEdit.value || !editSensitive.value) return;
+  if (!canReadSecrets.value || !isEdit.value || !editSensitive.value) return;
   if (showPlain.value) {
     // 切回脱敏展示：恢复初始值
     await formApi.setValues({ value: initialSnapshot.value ?? '' });
@@ -315,6 +321,7 @@ async function onSubmit(values: Record<string, any>) {
     <template #footer>
       <Space>
         <Button
+          v-access:code="'orp:secrets:read'"
           v-if="isEdit && editSensitive"
           :loading="plainLoading"
           size="small"

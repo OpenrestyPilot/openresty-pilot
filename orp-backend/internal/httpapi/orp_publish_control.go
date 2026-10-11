@@ -6,13 +6,42 @@ import (
 	"strconv"
 )
 
+func (s *Server) publishBatchWithinScope(r *http.Request, actor string, batchID int64) bool {
+	roles, err := s.accountRoles(r, actor)
+	if err != nil {
+		return false
+	}
+	if accountHasGlobalCenterPermission(roles, "orp:publish") {
+		return true
+	}
+	rows, err := s.db.QueryContext(r.Context(), "SELECT DISTINCT CAST(center_id AS CHAR) FROM orp_publish_item WHERE batch_id=?", batchID)
+	if err != nil {
+		return false
+	}
+	defer rows.Close()
+	found := false
+	for rows.Next() {
+		var centerID string
+		if rows.Scan(&centerID) != nil || !accountHasCenterPermission(roles, "orp:publish", centerID) {
+			return false
+		}
+		found = true
+	}
+	return found && rows.Err() == nil
+}
+
 func (s *Server) orpPublishAbort(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	actor, ok := s.orpIdentity(w, r)
+	if !ok {
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id < 1 {
 		orpFailure(w, 400, "批次 ID 无效")
+		return
+	}
+	if !s.publishBatchWithinScope(r, actor, id) {
+		orpFailure(w, http.StatusForbidden, "无权操作该批次中的节点")
 		return
 	}
 	tx, err := s.db.BeginTx(r.Context(), nil)
@@ -52,12 +81,17 @@ func (s *Server) orpPublishAbort(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) orpPublishAdvance(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	actor, ok := s.orpIdentity(w, r)
+	if !ok {
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id < 1 {
 		orpFailure(w, 400, "批次 ID 无效")
+		return
+	}
+	if !s.publishBatchWithinScope(r, actor, id) {
+		orpFailure(w, http.StatusForbidden, "无权操作该批次中的节点")
 		return
 	}
 	result, err := s.db.ExecContext(r.Context(), "UPDATE orp_publish_batch SET phase='running',canary_observe_until=NOW(6) WHERE id=? AND phase='canary_observing'", id)

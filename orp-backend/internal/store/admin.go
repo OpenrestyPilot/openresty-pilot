@@ -21,8 +21,28 @@ func SeedAdmin(db *sql.DB) error {
 	if password == "" {
 		return fmt.Errorf("OPENRESTY_ADMIN_PASSWORD is required")
 	}
-	if _, err := db.Exec("INSERT IGNORE INTO orp_role(code,name,status,builtin,permission_keys) VALUES('super','超级管理员','enabled',true,JSON_ARRAY('*'))"); err != nil {
-		return err
+	builtInRoles := []struct {
+		code, name, description string
+		permissions             []string
+	}{
+		{"super", "超级管理员", "拥有全部权限，包括账号和角色管理。", []string{"*"}},
+		{"platform-admin", "平台管理员", "管理平台配置、发布、节点运维和审计；不管理账号与角色。", []string{"orp:read", "orp:config:write", "orp:publish", "orp:node:operate", "orp:system:manage", "orp:audit:read"}},
+		{"config-editor", "配置编辑员", "查看和维护中心、节点及代理配置，不能发布或执行节点运维。", []string{"orp:read", "orp:config:write"}},
+		{"publish-operator", "发布操作员", "查看配置并执行发布、分批推进、终止和回滚。", []string{"orp:read", "orp:publish"}},
+		{"audit-viewer", "审计只读", "只读查看配置与审计记录，不可修改或发布。", []string{"orp:read", "orp:audit:read"}},
+		{"secret-reader", "敏感数据审计员", "仅在日常只读和审计权限上增加查看敏感配置的权限。", []string{"orp:read", "orp:audit:read", "orp:secrets:read"}},
+	}
+	for _, role := range builtInRoles {
+		permissions, err := json.Marshal(role.permissions)
+		if err != nil {
+			return err
+		}
+		if _, err := db.Exec(`INSERT INTO orp_role(code,name,description,status,builtin,permission_keys,center_ids)
+			VALUES(?,?,?,'enabled',true,?,JSON_ARRAY('*'))
+			ON DUPLICATE KEY UPDATE name=VALUES(name),description=VALUES(description),status='enabled',builtin=true,permission_keys=VALUES(permission_keys)`,
+			role.code, role.name, role.description, permissions); err != nil {
+			return err
+		}
 	}
 	var roleID int64
 	if err := db.QueryRow("SELECT id FROM orp_role WHERE code='super'").Scan(&roleID); err != nil {

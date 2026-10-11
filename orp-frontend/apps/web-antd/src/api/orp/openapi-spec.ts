@@ -122,7 +122,7 @@ export const openApiSpec = {
           '200': ok('#/components/schemas/GeoIPDatabaseInfo'),
           '400': bad('文件无效、不是 City 数据库或超过大小限制'),
           '401': bad('登录状态已失效', 401),
-          '403': bad('当前角色无写入权限', 403),
+          '403': bad('缺少系统运维管理权限', 403),
         },
       },
     },
@@ -191,11 +191,11 @@ export const openApiSpec = {
       },
       post: {
         tags: ['rbac'],
-        summary: '新增角色',
+        summary: '新增角色（配置权限与中心范围）',
         operationId: 'createRbacRole',
         requestBody: {
           content: { 'application/json': { schema: { type: 'object' } } },
-          description: 'code/name/description/status',
+          description: 'code/name/description/status/permissionKeys/centerIds；centerIds 使用 * 表示全部中心',
         },
         responses: { '200': { description: 'RbacRoleItem' } },
       },
@@ -203,9 +203,13 @@ export const openApiSpec = {
     '/orp/rbac/roles/{id}': {
       put: {
         tags: ['rbac'],
-        summary: '编辑角色（内置角色仅可改描述/名称）',
+        summary: '编辑自定义角色（权限与中心范围）',
         operationId: 'updateRbacRole',
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
+        requestBody: {
+          content: { 'application/json': { schema: { type: 'object' } } },
+          description: 'name/description/status/permissionKeys/centerIds',
+        },
         responses: { '200': { description: 'RbacRoleItem' } },
       },
       delete: {
@@ -219,7 +223,7 @@ export const openApiSpec = {
     '/orp/rbac/permissions': {
       get: {
         tags: ['rbac'],
-        summary: '权限定义树（菜单 + 操作点）',
+        summary: '可分配的全局权限项',
         operationId: 'listRbacPermissions',
         responses: { '200': { description: 'RbacPermissionNode[]' } },
       },
@@ -437,16 +441,16 @@ export const openApiSpec = {
     '/orp/nodes/{id}/agent/certificate': {
       put: {
         tags: ['nodes'], summary: '登记或撤销节点 Agent 客户端证书', operationId: 'registerNodeAgentCertificate', parameters: [idParam],
-        description: '仅超级管理员。登记 Agent ID 和客户端叶证书 SHA-256 指纹；发送 revoke=true 可撤销当前指纹并使未完成任务失效。证书签发由运维侧完成。',
+        description: '需要节点运维权限。登记 Agent ID 和客户端叶证书 SHA-256 指纹；发送 revoke=true 可撤销当前指纹并使未完成任务失效。证书签发由运维侧完成。',
         requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['nodeId'], properties: { nodeId: { type: 'string' }, certificateFingerprint: { type: 'string', pattern: '^[a-fA-F0-9]{64}$' }, revoke: { type: 'boolean' } } }, example: { nodeId: 'edge-sh-01', certificateFingerprint: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' } } } },
-        responses: { '200': { description: '证书绑定状态' }, '403': bad('仅超级管理员可登记证书', 403), '409': bad('Agent ID 或证书指纹冲突', 409) },
+        responses: { '200': { description: '证书绑定状态' }, '403': bad('缺少节点运维权限', 403), '409': bad('Agent ID 或证书指纹冲突', 409) },
       },
     },
     '/orp/nodes/{id}/agent/reload': {
-      post: { tags: ['nodes'], summary: '向在线 Agent 节点派发固定 reload', operationId: 'queueNodeAgentReload', parameters: [idParam], description: '仅超级管理员；只允许固定 reload 操作，任务有效期两分钟。', responses: { '201': { description: '已排队任务 ID' }, '409': bad('Agent 未登记、离线或已有未完成任务', 409) } },
+      post: { tags: ['nodes'], summary: '向在线 Agent 节点派发固定 reload', operationId: 'queueNodeAgentReload', parameters: [idParam], description: '需要节点运维权限；只允许固定 reload 操作，任务有效期两分钟。', responses: { '201': { description: '已排队任务 ID' }, '403': bad('缺少节点运维权限', 403), '409': bad('Agent 未登记、离线或已有未完成任务', 409) } },
     },
     '/orp/nodes/{id}/agent/tasks': {
-      get: { tags: ['nodes'], summary: '查询节点 Agent 最近任务', operationId: 'listNodeAgentTasks', parameters: [idParam], description: '仅超级管理员；最多返回最近 50 个任务及结果。', responses: { '200': { description: 'Agent 任务列表' }, '403': bad('仅超级管理员可查询 Agent 任务', 403) } },
+      get: { tags: ['nodes'], summary: '查询节点 Agent 最近任务', operationId: 'listNodeAgentTasks', parameters: [idParam], description: '需要查看平台配置权限；最多返回最近 50 个任务及结果。', responses: { '200': { description: 'Agent 任务列表' }, '403': bad('缺少查看平台配置权限', 403) } },
     },
     '/orp/nodes/{id}/metrics': {
       get: {
@@ -666,6 +670,19 @@ export const openApiSpec = {
         parameters: [idParam],
         responses: {
           '200': ok('#/components/schemas/CertificateDetail'),
+          '404': bad('证书不存在或已被删除', 404),
+        },
+      },
+    },
+    '/orp/certificates/{id}/public-detail': {
+      get: {
+        tags: ['tls'],
+        summary: '查询证书公开内容（不含私钥）',
+        description: '返回 PEM 公钥证书和证书链；读取私钥仍需 orp:secrets:read。',
+        operationId: 'getCertificatePublicDetail',
+        parameters: [idParam],
+        responses: {
+          '200': { description: '{ certificate, certificateChain }' },
           '404': bad('证书不存在或已被删除', 404),
         },
       },
@@ -909,7 +926,7 @@ export const openApiSpec = {
       get: {
         tags: ['audit'],
         summary: '分页查询审计日志',
-        description: '按模块 / 操作类型 / 操作人 / 时间范围组合检索，按时间倒序返回。',
+        description: '需要审计读取权限。按模块 / 操作类型 / 操作人 / 时间范围组合检索，按时间倒序返回。',
         operationId: 'listAuditLogs',
         parameters: [
           ...pageParams,

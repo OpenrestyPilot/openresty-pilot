@@ -153,7 +153,7 @@ void getUserInfoApi()
   >
     <BasicGrid table-title="账号列表">
       <template #toolbar-actions>
-        <Button type="primary" @click="onAdd">新增用户</Button>
+        <Button v-access:code="'*'" type="primary" @click="onAdd">新增用户</Button>
       </template>
       <template #roles="{ row }">
         <Tag
@@ -176,17 +176,17 @@ void getUserInfoApi()
         <span v-else class="text-gray-400">从未登录</span>
       </template>
       <template #action="{ row }">
-        <Button size="small" type="link" @click="onEdit(row)">编辑</Button>
+        <Button v-access:code="'*'" size="small" type="link" @click="onEdit(row)">编辑</Button>
         <Tooltip v-if="row.username === currentUsername" title="当前登录账号不可禁用或删除">
           <Button disabled size="small" type="link">重置密码</Button>
           <Button disabled size="small" type="link">删除</Button>
         </Tooltip>
         <template v-else>
-          <Popconfirm title="确认重置该账号密码为初始密码？" @confirm="onResetPassword(row)">
-            <Button size="small" type="link">重置密码</Button>
+          <Popconfirm v-access:code="'*'" title="确认重置该账号密码为初始密码？" @confirm="onResetPassword(row)">
+            <Button v-access:code="'*'" size="small" type="link">重置密码</Button>
           </Popconfirm>
-          <Popconfirm :title="`确认删除用户 ${row.realName}（${row.username}）？`" @confirm="onDelete(row)">
-            <Button danger size="small" type="link">删除</Button>
+          <Popconfirm v-access:code="'*'" :title="`确认删除用户 ${row.realName}（${row.username}）？`" @confirm="onDelete(row)">
+            <Button v-access:code="'*'" danger size="small" type="link">删除</Button>
           </Popconfirm>
         </template>
       </template>

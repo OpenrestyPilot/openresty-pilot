@@ -114,7 +114,7 @@ function onDelete(row: OrpIpGroup) {
   >
     <Grid table-title="IP 组列表">
       <template #toolbar-tools>
-        <Button type="primary" @click="onCreate">新增 IP 组</Button>
+        <Button v-access:code="'orp:config:write'" type="primary" @click="onCreate">新增 IP 组</Button>
       </template>
       <template #count="{ row }">{{ row.members.length }} 项</template>
       <template #members="{ row }">
@@ -136,8 +136,8 @@ function onDelete(row: OrpIpGroup) {
         </div>
       </template>
       <template #action="{ row }">
-        <Button size="small" type="link" @click="onEdit(row)">编辑</Button>
-        <Button danger size="small" type="link" @click="onDelete(row)">
+        <Button v-access:code="'orp:config:write'" size="small" type="link" @click="onEdit(row)">编辑</Button>
+        <Button v-access:code="'orp:config:write'" danger size="small" type="link" @click="onDelete(row)">
           删除
         </Button>
       </template>

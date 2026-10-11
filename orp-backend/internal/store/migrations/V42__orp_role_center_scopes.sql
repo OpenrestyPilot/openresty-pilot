@@ -1,0 +1,1 @@
+ALTER TABLE orp_role ADD COLUMN center_ids JSON NOT NULL DEFAULT (JSON_ARRAY('*'));

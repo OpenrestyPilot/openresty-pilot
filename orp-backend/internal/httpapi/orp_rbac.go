@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/rand"
 	"database/sql"
 	"encoding/json"
@@ -13,6 +14,23 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 )
+
+func accountHasPermissionForSystem(s *Server, w http.ResponseWriter, r *http.Request, actor string) bool {
+	roles, err := s.accountRoles(r, actor)
+	if err != nil {
+		orpFailure(w, 500, "读取权限失败")
+		return false
+	}
+	for _, role := range roles {
+		for _, permission := range role.Permissions {
+			if permission == "*" {
+				return true
+			}
+		}
+	}
+	orpFailure(w, 403, "仅超级管理员可操作")
+	return false
+}
 
 func (s *Server) requireSuper(w http.ResponseWriter, r *http.Request) bool {
 	username, ok := s.orpIdentity(w, r)
@@ -136,8 +154,18 @@ func orpNullableString(value sql.NullString) any {
 	return nil
 }
 
+func adminAuditDocument(values map[string]any) []byte {
+	raw, _ := json.Marshal(values)
+	return raw
+}
+
+func auditAdminChange(ctx context.Context, tx *sql.Tx, r *http.Request, actor, action, kind string, id int64, before, after map[string]any) error {
+	return orpAudit(ctx, tx, actor, action, kind, id, adminAuditDocument(before), adminAuditDocument(after), orpClientIP(r))
+}
+
 func (s *Server) rbacUserCreate(w http.ResponseWriter, r *http.Request) {
-	if !s.requireSuper(w, r) {
+	actor, ok := s.orpIdentity(w, r)
+	if !ok || !accountHasPermissionForSystem(s, w, r, actor) {
 		return
 	}
 	body, ok := orpBody(w, r)
@@ -164,12 +192,26 @@ func (s *Server) rbacUserCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rawRoles, _ := json.Marshal(roleIDs)
-	result, err := s.db.ExecContext(r.Context(), "INSERT INTO orp_account(username,password_hash,real_name,email,phone,status,role_ids) VALUES(?,?,?,?,?,?,?)", username, string(hash), realName, nullableInput(body["email"]), nullableInput(body["phone"]), statusInput(body["status"]), rawRoles)
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		orpFailure(w, 500, "创建事务失败")
+		return
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(r.Context(), "INSERT INTO orp_account(username,password_hash,real_name,email,phone,status,role_ids) VALUES(?,?,?,?,?,?,?)", username, string(hash), realName, nullableInput(body["email"]), nullableInput(body["phone"]), statusInput(body["status"]), rawRoles)
 	if err != nil {
 		orpFailure(w, 409, "用户名已存在或保存失败")
 		return
 	}
 	id, _ := result.LastInsertId()
+	if err := auditAdminChange(r.Context(), tx, r, actor, "create", "rbac-user", id, nil, map[string]any{"username": username, "realName": realName, "email": nullableInput(body["email"]), "phone": nullableInput(body["phone"]), "status": statusInput(body["status"]), "roleIds": roleIDs}); err != nil {
+		orpFailure(w, 500, "记录用户审计失败")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		orpFailure(w, 500, "提交用户失败")
+		return
+	}
 	orpReply(w, 201, map[string]any{"id": id, "username": username, "realName": realName, "roleIds": roleIDs, "status": statusInput(body["status"])})
 }
 
@@ -277,6 +319,17 @@ func (s *Server) rbacUserUpdate(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	var oldName, oldStatus string
+	var oldEmail, oldPhone sql.NullString
+	var oldRoles []byte
+	if err := s.db.QueryRowContext(r.Context(), "SELECT real_name,email,phone,status,role_ids FROM orp_account WHERE id=?", id).Scan(&oldName, &oldEmail, &oldPhone, &oldStatus, &oldRoles); err != nil {
+		orpFailure(w, 404, "用户不存在")
+		return
+	}
+	var oldRoleIDs []int64
+	_ = json.Unmarshal(oldRoles, &oldRoleIDs)
+	before := map[string]any{"username": currentUsername, "realName": oldName, "email": orpNullableString(oldEmail), "phone": orpNullableString(oldPhone), "status": oldStatus, "roleIds": oldRoleIDs}
+	after := map[string]any{"username": currentUsername, "realName": name, "email": nullableInput(body["email"]), "phone": nullableInput(body["phone"]), "status": statusInput(body["status"]), "roleIds": roleIDs, "passwordReset": password != ""}
 	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		orpFailure(w, 500, "创建事务失败")
@@ -298,6 +351,10 @@ func (s *Server) rbacUserUpdate(w http.ResponseWriter, r *http.Request) {
 			orpFailure(w, 500, "更新密码失败")
 			return
 		}
+	}
+	if err := auditAdminChange(r.Context(), tx, r, usernameFromToken(r.Header.Get("Authorization")), "update", "rbac-user", id, before, after); err != nil {
+		orpFailure(w, 500, "记录用户审计失败")
+		return
 	}
 	if err := tx.Commit(); err != nil {
 		orpFailure(w, 500, "提交更新失败")
@@ -326,8 +383,31 @@ func (s *Server) rbacUserDelete(w http.ResponseWriter, r *http.Request) {
 		orpFailure(w, 409, "不能删除当前登录账号")
 		return
 	}
-	if _, err := s.db.ExecContext(r.Context(), "DELETE FROM orp_account WHERE id=?", id); err != nil {
+	var name, status string
+	var email, phone sql.NullString
+	var rolesRaw []byte
+	if err := s.db.QueryRowContext(r.Context(), "SELECT real_name,email,phone,status,role_ids FROM orp_account WHERE id=?", id).Scan(&name, &email, &phone, &status, &rolesRaw); err != nil {
+		orpFailure(w, 404, "用户不存在")
+		return
+	}
+	var roleIDs []int64
+	_ = json.Unmarshal(rolesRaw, &roleIDs)
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		orpFailure(w, 500, "创建事务失败")
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(r.Context(), "DELETE FROM orp_account WHERE id=?", id); err != nil {
 		orpFailure(w, 500, "删除用户失败")
+		return
+	}
+	if err := auditAdminChange(r.Context(), tx, r, usernameFromToken(r.Header.Get("Authorization")), "delete", "rbac-user", id, map[string]any{"username": username, "realName": name, "email": orpNullableString(email), "phone": orpNullableString(phone), "status": status, "roleIds": roleIDs}, nil); err != nil {
+		orpFailure(w, 500, "记录用户审计失败")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		orpFailure(w, 500, "提交用户删除失败")
 		return
 	}
 	orpReply(w, 200, nil)
@@ -356,8 +436,22 @@ func (s *Server) rbacUserResetPassword(w http.ResponseWriter, r *http.Request) {
 		orpFailure(w, 500, "加密密码失败")
 		return
 	}
-	if _, err := s.db.ExecContext(r.Context(), "UPDATE orp_account SET password_hash=? WHERE id=?", string(hash), id); err != nil {
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		orpFailure(w, 500, "创建事务失败")
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(r.Context(), "UPDATE orp_account SET password_hash=? WHERE id=?", string(hash), id); err != nil {
 		orpFailure(w, 500, "重置密码失败")
+		return
+	}
+	if err := auditAdminChange(r.Context(), tx, r, usernameFromToken(r.Header.Get("Authorization")), "update", "rbac-user", id, map[string]any{"username": username}, map[string]any{"username": username, "passwordReset": true}); err != nil {
+		orpFailure(w, 500, "记录密码重置审计失败")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		orpFailure(w, 500, "提交密码重置失败")
 		return
 	}
 	orpReply(w, 200, map[string]any{"username": username, "resetTo": password})
@@ -367,7 +461,7 @@ func (s *Server) rbacRolesList(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSuper(w, r) {
 		return
 	}
-	rows, err := s.db.QueryContext(r.Context(), "SELECT id,code,name,description,status,builtin,permission_keys,created_at FROM orp_role ORDER BY id")
+	rows, err := s.db.QueryContext(r.Context(), "SELECT id,code,name,description,status,builtin,permission_keys,center_ids,created_at FROM orp_role ORDER BY id")
 	if err != nil {
 		orpFailure(w, 500, "读取角色失败")
 		return
@@ -379,9 +473,9 @@ func (s *Server) rbacRolesList(w http.ResponseWriter, r *http.Request) {
 		var code, name, status string
 		var desc sql.NullString
 		var builtin bool
-		var raw []byte
+		var raw, centerIDsRaw []byte
 		var created time.Time
-		if err := rows.Scan(&id, &code, &name, &desc, &status, &builtin, &raw, &created); err != nil {
+		if err := rows.Scan(&id, &code, &name, &desc, &status, &builtin, &raw, &centerIDsRaw, &created); err != nil {
 			orpFailure(w, 500, "读取角色失败")
 			return
 		}
@@ -390,7 +484,13 @@ func (s *Server) rbacRolesList(w http.ResponseWriter, r *http.Request) {
 			orpFailure(w, 500, "角色权限数据损坏")
 			return
 		}
-		items = append(items, map[string]any{"id": id, "code": code, "name": name, "description": orpNullableString(desc), "status": status, "builtin": builtin, "permissionKeys": keys, "createdAt": created.Format("2006-01-02 15:04:05")})
+		keys = normalizePermissionKeys(keys)
+		var centerIDs []string
+		if err := json.Unmarshal(centerIDsRaw, &centerIDs); err != nil {
+			orpFailure(w, 500, "角色中心范围数据损坏")
+			return
+		}
+		items = append(items, map[string]any{"id": id, "code": code, "name": name, "description": orpNullableString(desc), "status": status, "builtin": builtin, "permissionKeys": keys, "centerIds": centerIDs, "createdAt": created.Format("2006-01-02 15:04:05")})
 	}
 	if err := rows.Err(); err != nil {
 		orpFailure(w, 500, "读取角色失败")
@@ -416,17 +516,43 @@ func (s *Server) rbacRoleCreate(w http.ResponseWriter, r *http.Request) {
 	if code == "" {
 		code = "role-" + strconv.FormatInt(time.Now().UnixNano(), 36)
 	}
-	keys, _ := json.Marshal(body["permissionKeys"])
-	if string(keys) == "null" {
-		keys = []byte("[]")
+	permissions, err := validatedRolePermissions(body["permissionKeys"])
+	if err != nil {
+		orpFailure(w, 400, err.Error())
+		return
 	}
-	result, err := s.db.ExecContext(r.Context(), "INSERT INTO orp_role(code,name,description,status,builtin,permission_keys) VALUES(?,?,?,?,false,?)", code, name, nullableInput(body["description"]), statusInput(body["status"]), keys)
+	keys, _ := json.Marshal(permissions)
+	centerIDs, err := validatedCenterIDs(body["centerIds"])
+	if err != nil {
+		orpFailure(w, 400, err.Error())
+		return
+	}
+	if err := s.validateCenterIDs(r, centerIDs); err != nil {
+		orpFailure(w, 400, err.Error())
+		return
+	}
+	scopes, _ := json.Marshal(centerIDs)
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		orpFailure(w, 500, "创建事务失败")
+		return
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(r.Context(), "INSERT INTO orp_role(code,name,description,status,builtin,permission_keys,center_ids) VALUES(?,?,?,?,false,?,?)", code, name, nullableInput(body["description"]), statusInput(body["status"]), keys, scopes)
 	if err != nil {
 		orpFailure(w, 409, "角色代码已存在或保存失败")
 		return
 	}
 	id, _ := result.LastInsertId()
-	orpReply(w, 201, map[string]any{"id": id, "code": code, "name": name, "builtin": false, "status": statusInput(body["status"]), "permissionKeys": body["permissionKeys"]})
+	if err := auditAdminChange(r.Context(), tx, r, usernameFromToken(r.Header.Get("Authorization")), "create", "rbac-role", id, nil, map[string]any{"code": code, "name": name, "description": nullableInput(body["description"]), "status": statusInput(body["status"]), "permissionKeys": permissions, "centerIds": centerIDs}); err != nil {
+		orpFailure(w, 500, "记录角色审计失败")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		orpFailure(w, 500, "提交角色失败")
+		return
+	}
+	orpReply(w, 201, map[string]any{"id": id, "code": code, "name": name, "builtin": false, "status": statusInput(body["status"]), "permissionKeys": permissions, "centerIds": centerIDs})
 }
 
 func (s *Server) rbacRoleUpdate(w http.ResponseWriter, r *http.Request) {
@@ -447,7 +573,10 @@ func (s *Server) rbacRoleUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var builtin bool
-	if err := s.db.QueryRowContext(r.Context(), "SELECT builtin FROM orp_role WHERE id=?", id).Scan(&builtin); err != nil {
+	var code, oldName, oldStatus string
+	var oldDescription sql.NullString
+	var oldKeysRaw, oldCenterIDsRaw []byte
+	if err := s.db.QueryRowContext(r.Context(), "SELECT builtin,code,name,description,status,permission_keys,center_ids FROM orp_role WHERE id=?", id).Scan(&builtin, &code, &oldName, &oldDescription, &oldStatus, &oldKeysRaw, &oldCenterIDsRaw); err != nil {
 		orpFailure(w, 404, "角色不存在")
 		return
 	}
@@ -455,15 +584,90 @@ func (s *Server) rbacRoleUpdate(w http.ResponseWriter, r *http.Request) {
 		orpFailure(w, 409, "内置角色不可修改")
 		return
 	}
-	keys, _ := json.Marshal(body["permissionKeys"])
-	if string(keys) == "null" {
-		keys = []byte("[]")
+	permissions, err := validatedRolePermissions(body["permissionKeys"])
+	if err != nil {
+		orpFailure(w, 400, err.Error())
+		return
 	}
-	if _, err := s.db.ExecContext(r.Context(), "UPDATE orp_role SET name=?,description=?,status=?,permission_keys=? WHERE id=?", name, nullableInput(body["description"]), statusInput(body["status"]), keys, id); err != nil {
+	keys, _ := json.Marshal(permissions)
+	centerIDs, err := validatedCenterIDs(body["centerIds"])
+	if err != nil {
+		orpFailure(w, 400, err.Error())
+		return
+	}
+	if err := s.validateCenterIDs(r, centerIDs); err != nil {
+		orpFailure(w, 400, err.Error())
+		return
+	}
+	scopes, _ := json.Marshal(centerIDs)
+	var oldKeys, oldCenterIDs []string
+	_ = json.Unmarshal(oldKeysRaw, &oldKeys)
+	_ = json.Unmarshal(oldCenterIDsRaw, &oldCenterIDs)
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		orpFailure(w, 500, "创建事务失败")
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(r.Context(), "UPDATE orp_role SET name=?,description=?,status=?,permission_keys=?,center_ids=? WHERE id=?", name, nullableInput(body["description"]), statusInput(body["status"]), keys, scopes, id); err != nil {
 		orpFailure(w, 500, "更新角色失败")
 		return
 	}
-	orpReply(w, 200, map[string]any{"id": id, "name": name, "status": statusInput(body["status"]), "permissionKeys": body["permissionKeys"]})
+	if err := auditAdminChange(r.Context(), tx, r, usernameFromToken(r.Header.Get("Authorization")), "update", "rbac-role", id, map[string]any{"code": code, "name": oldName, "description": orpNullableString(oldDescription), "status": oldStatus, "permissionKeys": oldKeys, "centerIds": oldCenterIDs}, map[string]any{"code": code, "name": name, "description": nullableInput(body["description"]), "status": statusInput(body["status"]), "permissionKeys": permissions, "centerIds": centerIDs}); err != nil {
+		orpFailure(w, 500, "记录角色审计失败")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		orpFailure(w, 500, "提交角色失败")
+		return
+	}
+	orpReply(w, 200, map[string]any{"id": id, "name": name, "status": statusInput(body["status"]), "permissionKeys": permissions, "centerIds": centerIDs})
+}
+
+func validatedCenterIDs(value any) ([]string, error) {
+	if value == nil {
+		return []string{}, nil
+	}
+	items, ok := value.([]any)
+	if !ok {
+		return nil, errors.New("中心范围必须为数组")
+	}
+	result := make([]string, 0, len(items))
+	seen := map[string]bool{}
+	for _, item := range items {
+		id, ok := item.(string)
+		if !ok {
+			if number, numeric := item.(float64); numeric && number > 0 && number == float64(int64(number)) {
+				id = strconv.FormatInt(int64(number), 10)
+				ok = true
+			}
+		}
+		if !ok || id == "" || id == "*" && len(items) > 1 {
+			return nil, errors.New("中心范围标识无效，全部中心不能与单独中心混用")
+		}
+		if !seen[id] {
+			seen[id] = true
+			result = append(result, id)
+		}
+	}
+	return result, nil
+}
+
+func (s *Server) validateCenterIDs(r *http.Request, ids []string) error {
+	for _, id := range ids {
+		if id == "*" {
+			continue
+		}
+		numericID, err := strconv.ParseInt(id, 10, 64)
+		if err != nil || numericID < 1 {
+			return fmt.Errorf("中心范围标识无效：%s", id)
+		}
+		var exists bool
+		if err := s.db.QueryRowContext(r.Context(), "SELECT EXISTS(SELECT 1 FROM orp_resource WHERE kind='centers' AND id=?)", numericID).Scan(&exists); err != nil || !exists {
+			return fmt.Errorf("中心 %s 不存在", id)
+		}
+	}
+	return nil
 }
 
 func (s *Server) rbacRoleDelete(w http.ResponseWriter, r *http.Request) {
@@ -475,7 +679,10 @@ func (s *Server) rbacRoleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var builtin bool
-	if err := s.db.QueryRowContext(r.Context(), "SELECT builtin FROM orp_role WHERE id=?", id).Scan(&builtin); err != nil {
+	var code, name, status string
+	var desc sql.NullString
+	var permissionsRaw, centersRaw []byte
+	if err := s.db.QueryRowContext(r.Context(), "SELECT builtin,code,name,description,status,permission_keys,center_ids FROM orp_role WHERE id=?", id).Scan(&builtin, &code, &name, &desc, &status, &permissionsRaw, &centersRaw); err != nil {
 		orpFailure(w, 404, "角色不存在")
 		return
 	}
@@ -504,8 +711,25 @@ func (s *Server) rbacRoleDelete(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	rows.Close()
-	if _, err := s.db.ExecContext(r.Context(), "DELETE FROM orp_role WHERE id=?", id); err != nil {
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		orpFailure(w, 500, "创建事务失败")
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(r.Context(), "DELETE FROM orp_role WHERE id=?", id); err != nil {
 		orpFailure(w, 500, "删除角色失败")
+		return
+	}
+	var permissions, centers []string
+	_ = json.Unmarshal(permissionsRaw, &permissions)
+	_ = json.Unmarshal(centersRaw, &centers)
+	if err := auditAdminChange(r.Context(), tx, r, usernameFromToken(r.Header.Get("Authorization")), "delete", "rbac-role", id, map[string]any{"code": code, "name": name, "description": orpNullableString(desc), "status": status, "permissionKeys": permissions, "centerIds": centers}, nil); err != nil {
+		orpFailure(w, 500, "记录角色审计失败")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		orpFailure(w, 500, "提交角色删除失败")
 		return
 	}
 	orpReply(w, 200, nil)
@@ -516,10 +740,43 @@ func (s *Server) rbacPermissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	orpReply(w, 200, []map[string]any{
-		{"key": "orp:read", "title": "查看配置", "type": "menu"},
-		{"key": "orp:write", "title": "编辑配置", "type": "action"},
-		{"key": "orp:secrets:read", "title": "查看敏感信息", "type": "action"},
+		{"key": "orp:read", "title": "查看平台配置", "type": "menu"},
+		{"key": "orp:config:write", "title": "编辑配置", "type": "action"},
+		{"key": "orp:publish", "title": "执行发布", "type": "action"},
+		{"key": "orp:node:operate", "title": "节点运维", "type": "action"},
+		{"key": "orp:system:manage", "title": "系统运维管理", "type": "action"},
+		{"key": "orp:audit:read", "title": "查看审计记录", "type": "menu"},
+		{"key": "orp:secrets:read", "title": "查看敏感数据", "type": "action"},
 	})
+}
+
+var assignableRolePermissions = map[string]bool{
+	"orp:read": true, "orp:config:write": true, "orp:publish": true,
+	"orp:node:operate": true, "orp:system:manage": true,
+	"orp:audit:read": true, "orp:secrets:read": true,
+}
+
+func validatedRolePermissions(value any) ([]string, error) {
+	if value == nil {
+		return []string{}, nil
+	}
+	raw, ok := value.([]any)
+	if !ok {
+		return nil, errors.New("权限必须为权限标识数组")
+	}
+	seen := map[string]bool{}
+	keys := make([]string, 0, len(raw))
+	for _, item := range raw {
+		key, ok := item.(string)
+		if !ok || !assignableRolePermissions[key] {
+			return nil, fmt.Errorf("不支持的权限标识：%v", item)
+		}
+		if !seen[key] {
+			seen[key] = true
+			keys = append(keys, key)
+		}
+	}
+	return keys, nil
 }
 
 func (s *Server) rbacRolePermissionsGet(w http.ResponseWriter, r *http.Request) {
@@ -540,7 +797,7 @@ func (s *Server) rbacRolePermissionsGet(w http.ResponseWriter, r *http.Request) 
 		orpFailure(w, 500, "权限数据损坏")
 		return
 	}
-	orpReply(w, 200, map[string]any{"permissionKeys": keys})
+	orpReply(w, 200, map[string]any{"permissionKeys": normalizePermissionKeys(keys)})
 }
 
 func (s *Server) rbacRolePermissionsPut(w http.ResponseWriter, r *http.Request) {
@@ -556,7 +813,8 @@ func (s *Server) rbacRolePermissionsPut(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	var builtin bool
-	if err := s.db.QueryRowContext(r.Context(), "SELECT builtin FROM orp_role WHERE id=?", id).Scan(&builtin); err != nil {
+	var oldRaw []byte
+	if err := s.db.QueryRowContext(r.Context(), "SELECT builtin,permission_keys FROM orp_role WHERE id=?", id).Scan(&builtin, &oldRaw); err != nil {
 		orpFailure(w, 404, "角色不存在")
 		return
 	}
@@ -564,14 +822,30 @@ func (s *Server) rbacRolePermissionsPut(w http.ResponseWriter, r *http.Request) 
 		orpFailure(w, 409, "内置角色权限不可修改")
 		return
 	}
-	keys, ok := body["permissionKeys"].([]any)
-	if !ok {
-		orpFailure(w, 400, "permissionKeys 必须是数组")
+	keys, err := validatedRolePermissions(body["permissionKeys"])
+	if err != nil {
+		orpFailure(w, 400, err.Error())
 		return
 	}
 	raw, _ := json.Marshal(keys)
-	if _, err := s.db.ExecContext(r.Context(), "UPDATE orp_role SET permission_keys=? WHERE id=?", raw, id); err != nil {
+	var oldKeys []string
+	_ = json.Unmarshal(oldRaw, &oldKeys)
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		orpFailure(w, 500, "创建事务失败")
+		return
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(r.Context(), "UPDATE orp_role SET permission_keys=? WHERE id=?", raw, id); err != nil {
 		orpFailure(w, 500, "保存权限失败")
+		return
+	}
+	if err := auditAdminChange(r.Context(), tx, r, usernameFromToken(r.Header.Get("Authorization")), "update", "rbac-role", id, map[string]any{"permissionKeys": oldKeys}, map[string]any{"permissionKeys": keys}); err != nil {
+		orpFailure(w, 500, "记录权限审计失败")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		orpFailure(w, 500, "提交角色权限失败")
 		return
 	}
 	orpReply(w, 200, map[string]any{"permissionKeys": keys})

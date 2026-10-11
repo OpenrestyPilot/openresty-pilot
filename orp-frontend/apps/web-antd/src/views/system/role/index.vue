@@ -60,6 +60,7 @@ const gridOptions: VxeGridProps<RbacRoleItem> = {
     },
     { field: 'userCount', slots: { default: 'userCount' }, title: '绑定用户', width: 100 },
     { field: 'permissionKeys', slots: { default: 'perms' }, title: '权限数', width: 90 },
+    { field: 'centerIds', slots: { default: 'centerScope' }, title: '中心范围', width: 130 },
     { field: 'description', minWidth: 220, showOverflow: true, title: '角色描述' },
     { field: 'createdAt', title: '创建时间', width: 170 },
     {
@@ -122,11 +123,11 @@ function onFormSuccess() {
 <template>
   <Page
     title="角色管理"
-    description="以角色为载体聚合菜单与操作权限；用户通过绑定角色获得权限，内置角色不可删除。"
+    description="角色职责通过权限项明确区分。平台管理员、配置编辑员、发布操作员和审计只读为固定内置角色；需要不同组合时请创建自定义角色。"
   >
     <BasicGrid table-title="角色列表">
       <template #toolbar-actions>
-        <Button type="primary" @click="onAdd">新增角色</Button>
+        <Button v-access:code="'*'" type="primary" @click="onAdd">新增角色</Button>
       </template>
       <template #builtin="{ row }">
         <Tag v-if="row.builtin" class="!m-0" color="purple">内置</Tag>
@@ -144,11 +145,22 @@ function onFormSuccess() {
       <template #perms="{ row }">
         <Tag class="!m-0" color="cyan">{{ row.permissionKeys.length }} 项</Tag>
       </template>
+      <template #centerScope="{ row }">
+        <Tag v-if="row.centerIds.includes('*')" class="!m-0" color="purple">全部中心</Tag>
+        <Tag v-else-if="row.centerIds.length" class="!m-0" color="blue">{{ row.centerIds.length }} 个中心</Tag>
+        <span v-else class="text-gray-400">全局配置</span>
+      </template>
       <template #action="{ row }">
-        <Button size="small" type="link" @click="onAssign(row)">分配权限</Button>
-        <Button size="small" type="link" @click="onEdit(row)">编辑</Button>
-        <Popconfirm v-if="!row.builtin" :title="`确认删除角色 ${row.name}？`" @confirm="onDelete(row)">
-          <Button danger size="small" type="link">删除</Button>
+        <Tooltip v-if="row.builtin" title="内置角色职责固定，请创建自定义角色后分配权限">
+          <Button disabled size="small" type="link">分配权限</Button>
+        </Tooltip>
+        <Button v-else v-access:code="'*'" size="small" type="link" @click="onAssign(row)">分配权限</Button>
+        <Tooltip v-if="row.builtin" title="内置角色信息固定">
+          <Button disabled size="small" type="link">编辑</Button>
+        </Tooltip>
+        <Button v-else v-access:code="'*'" size="small" type="link" @click="onEdit(row)">编辑</Button>
+        <Popconfirm v-if="!row.builtin" v-access:code="'*'" :title="`确认删除角色 ${row.name}？`" @confirm="onDelete(row)">
+          <Button v-access:code="'*'" danger size="small" type="link">删除</Button>
         </Popconfirm>
         <Tooltip v-else title="内置角色不可删除">
           <Button disabled size="small" type="link">删除</Button>

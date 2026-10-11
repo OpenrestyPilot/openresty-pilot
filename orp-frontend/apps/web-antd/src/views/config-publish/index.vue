@@ -264,6 +264,7 @@ function onProgressClosed() {
         已选 <b>{{ checked.ids.length }}</b> 个实例
       </span>
       <Button
+        v-access:code="'orp:publish'"
         :loading="publishing"
         danger
         type="primary"

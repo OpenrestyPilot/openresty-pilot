@@ -38,6 +38,7 @@ export type RbacRoleStatus = 'disabled' | 'enabled';
 export interface RbacRoleItem {
   builtin: boolean;
   code: string;
+  centerIds: string[];
   createdAt: string;
   description: null | string;
   id: number;
@@ -49,6 +50,7 @@ export interface RbacRoleItem {
 
 /** 角色创建/编辑载荷 */
 export interface RbacRolePayload {
+  centerIds?: string[];
   code?: string;
   description?: string;
   name: string;
@@ -59,6 +61,7 @@ export interface RbacRolePayload {
 /** 权限树节点（菜单/操作点） */
 export interface RbacPermissionNode {
   children?: RbacPermissionNode[];
+  description?: string;
   key: string;
   title: string;
   type: 'action' | 'menu';

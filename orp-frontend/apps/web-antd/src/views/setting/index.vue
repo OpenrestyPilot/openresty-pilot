@@ -6,7 +6,7 @@ import type { VxeGridProps } from '#/adapter/vxe-table';
 import { computed, onMounted, ref } from 'vue';
 
 import { Page, useVbenModal } from '@vben/common-ui';
-import { useUserStore } from '@vben/stores';
+import { useAccessStore } from '@vben/stores';
 
 import { SettingOutlined, UploadOutlined } from '@ant-design/icons-vue';
 import {
@@ -75,11 +75,11 @@ const activeGroup = ref('all');
 /** 勾选的配置项（批量移动分组用） */
 const selectedRows = ref<OrpSetting[]>([]);
 
-/** 分组管理与批量移动仅管理员可用（演示账号 vben / admin；jack 只读） */
-const userStore = useUserStore();
+/** 分组管理与批量移动要求配置写入权限。 */
+const accessStore = useAccessStore();
 const canManageGroups = computed(() => {
-  const roles = (userStore.userInfo?.roles ?? []) as string[];
-  return roles.includes('super') || roles.includes('admin');
+  const permissions = accessStore.accessCodes;
+  return permissions.includes('*') || permissions.includes('orp:config:write');
 });
 
 const geoIPStatus = ref<null | Awaited<ReturnType<typeof getGeoIPDatabaseStatusApi>>>(null);
@@ -427,7 +427,7 @@ function onDelete(row: OrpSetting) {
             type="file"
             @change="onGeoIPFileChange"
           />
-          <Button :loading="geoIPImporting" @click="geoIPFileInput?.click()">
+          <Button v-access:code="'orp:system:manage'" :loading="geoIPImporting" @click="geoIPFileInput?.click()">
             <UploadOutlined />
             {{ geoIPStatus?.state === 'ready' ? '替换数据库' : '导入数据库' }}
           </Button>
@@ -480,7 +480,7 @@ function onDelete(row: OrpSetting) {
         >
           批量移动分组{{ selectedRows.length > 0 ? `（${selectedRows.length}）` : '' }}
         </Button>
-        <Button type="primary" @click="onCreate">新增配置</Button>
+        <Button v-access:code="'orp:config:write'" type="primary" @click="onCreate">新增配置</Button>
       </template>
       <template #key="{ row }">
         <span class="font-mono text-xs">{{ row.key }}</span>
@@ -515,6 +515,7 @@ function onDelete(row: OrpSetting) {
       </template>
       <template #status="{ row }">
         <Popconfirm
+          v-access:code="'orp:config:write'"
           :title="
             row.status === 'enabled'
               ? `确认禁用「${row.name}」？禁用后引用方回退默认值`
@@ -533,8 +534,8 @@ function onDelete(row: OrpSetting) {
         </Popconfirm>
       </template>
       <template #action="{ row }">
-        <Button size="small" type="link" @click="onEdit(row)">编辑</Button>
-        <Button danger size="small" type="link" @click="onDelete(row)">
+        <Button v-access:code="'orp:config:write'" size="small" type="link" @click="onEdit(row)">编辑</Button>
+        <Button v-access:code="'orp:config:write'" danger size="small" type="link" @click="onDelete(row)">
           删除
         </Button>
       </template>

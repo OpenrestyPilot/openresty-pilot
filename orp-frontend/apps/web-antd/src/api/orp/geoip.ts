@@ -2,7 +2,7 @@ import type { GeoIPDatabaseStatus } from './types';
 
 import { useAccessStore } from '@vben/stores';
 
-import { requestClient } from '#/api/request';
+import { redirectToLoginOnUnauthorized, requestClient } from '#/api/request';
 
 export function getGeoIPDatabaseStatusApi(): Promise<GeoIPDatabaseStatus> {
   return requestClient.get('/orp/geoip-database');
@@ -19,6 +19,10 @@ export async function importGeoIPDatabaseApi(file: File): Promise<GeoIPDatabaseS
     },
     method: 'POST',
   });
+  if (response.status === 401) {
+    await redirectToLoginOnUnauthorized();
+    throw new Error('登录状态已失效，正在跳转登录页');
+  }
   const result = (await response.json()) as {
     code?: number;
     data?: GeoIPDatabaseStatus;

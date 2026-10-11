@@ -49,26 +49,205 @@ func (s *Server) orpIdentity(w http.ResponseWriter, r *http.Request) (string, bo
 		orpFailure(w, http.StatusUnauthorized, "用户不存在或已禁用")
 		return "", false
 	}
-	if r.Method != http.MethodGet {
-		allowed := false
-		for _, role := range roles {
-			for _, permission := range role.Permissions {
-				if permission == "*" || permission == "orp:write" {
-					allowed = true
-					break
-				}
-			}
-		}
-		if !allowed {
-			orpFailure(w, http.StatusForbidden, "当前角色无写入权限")
-			return "", false
-		}
+	permission := requiredORPPermission(r)
+	if !accountHasPermission(roles, permission) {
+		orpFailure(w, http.StatusForbidden, "当前角色缺少所需权限："+permission)
+		return "", false
+	}
+	if centerID := r.URL.Query().Get("centerId"); centerID != "" && !accountHasCenterPermission(roles, permission, centerID) {
+		orpFailure(w, http.StatusForbidden, "当前角色无权访问该中心")
+		return "", false
+	}
+	if !s.requestCenterScopeAllowed(r, roles, permission) {
+		orpFailure(w, http.StatusForbidden, "当前角色无权访问该中心")
+		return "", false
 	}
 	return user, true
 }
 
+func accountCenterIDs(roles []accountRole, permission string) ([]string, bool) {
+	set := map[string]bool{}
+	for _, role := range roles {
+		if !roleHasPermission(role, permission) {
+			continue
+		}
+		for _, id := range role.CenterIDs {
+			if id == "*" {
+				return nil, true
+			}
+			set[id] = true
+		}
+	}
+	ids := make([]string, 0, len(set))
+	for id := range set {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids, false
+}
+
+func accountHasCenterScope(roles []accountRole, centerID string) bool {
+	if strings.TrimSpace(centerID) == "" {
+		return true // Global resources are shared across centers.
+	}
+	for _, role := range roles {
+		for _, allowed := range role.CenterIDs {
+			if allowed == "*" || allowed == centerID {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func roleHasPermission(role accountRole, permission string) bool {
+	for _, key := range role.Permissions {
+		if key == "*" || key == permission || key == "orp:write" && permission == "orp:config:write" {
+			return true
+		}
+	}
+	return false
+}
+
+func accountHasCenterPermission(roles []accountRole, permission, centerID string) bool {
+	for _, role := range roles {
+		if roleHasPermission(role, permission) && (centerID == "" || accountHasCenterScope([]accountRole{role}, centerID)) {
+			return true
+		}
+	}
+	return false
+}
+
+func accountHasGlobalCenterPermission(roles []accountRole, permission string) bool {
+	return accountHasCenterPermission(roles, permission, "*")
+}
+
+func centerIDString(value any) string {
+	switch id := value.(type) {
+	case string:
+		return id
+	case float64:
+		if id == float64(int64(id)) {
+			return strconv.FormatInt(int64(id), 10)
+		}
+	case int64:
+		return strconv.FormatInt(id, 10)
+	case int:
+		return strconv.Itoa(id)
+	case json.Number:
+		return id.String()
+	}
+	return ""
+}
+
+// requestCenterScopeAllowed protects direct resource and legacy center routes.
+// Collection filtering and write-body validation are performed in the CRUD handlers.
+func (s *Server) requestCenterScopeAllowed(r *http.Request, roles []accountRole, permission string) bool {
+	if centerID := r.PathValue("centerID"); centerID != "" {
+		if accountHasCenterPermission(roles, permission, centerID) {
+			return true
+		}
+		var numericID string
+		err := s.db.QueryRowContext(r.Context(), "SELECT CAST(id AS CHAR) FROM orp_resource WHERE kind='centers' AND JSON_UNQUOTE(JSON_EXTRACT(document,'$.legacyId'))=? LIMIT 1", centerID).Scan(&numericID)
+		return err == nil && accountHasCenterPermission(roles, permission, numericID)
+	}
+	kind, rawID := r.PathValue("kind"), r.PathValue("id")
+	if kind == "" && rawID != "" {
+		parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+		if len(parts) >= 4 && parts[0] == "api" && parts[1] == "orp" && orpKinds[parts[2]] && parts[3] == rawID {
+			kind = parts[2]
+		}
+	}
+	if rawID == "" || !orpKinds[kind] {
+		return true
+	}
+	id, err := strconv.ParseInt(rawID, 10, 64)
+	if err != nil {
+		return false
+	}
+	var raw []byte
+	if err := s.db.QueryRowContext(r.Context(), "SELECT document FROM orp_resource WHERE kind=? AND id=?", kind, id).Scan(&raw); err != nil {
+		return false
+	}
+	var doc map[string]any
+	if json.Unmarshal(raw, &doc) != nil {
+		return false
+	}
+	if kind == "centers" {
+		return accountHasCenterPermission(roles, permission, rawID) || accountHasCenterPermission(roles, permission, centerIDString(doc["legacyId"]))
+	}
+	return accountHasCenterPermission(roles, permission, centerIDString(doc["centerId"]))
+}
+
+func (s *Server) documentCenterScopeAllowed(r *http.Request, roles []accountRole, permission, kind string, doc map[string]any) bool {
+	if kind == "centers" {
+		return accountHasCenterPermission(roles, permission, centerIDString(doc["id"])) || accountHasCenterPermission(roles, permission, centerIDString(doc["legacyId"]))
+	}
+	return accountHasCenterPermission(roles, permission, centerIDString(doc["centerId"]))
+}
+
+func accountHasPermission(roles []accountRole, permission string) bool {
+	for _, role := range roles {
+		if roleHasPermission(role, permission) {
+			return true
+		}
+	}
+	return false
+}
+
+// requiredORPPermission centralizes authorization for handlers that call
+// orpIdentity. Keep the rules aligned with the permission catalog in
+// rbacPermissions so the UI labels describe real server-side checks.
+func requiredORPPermission(r *http.Request) string {
+	path := r.URL.Path
+	if r.Method == http.MethodGet || r.Method == http.MethodHead {
+		if path == "/api/orp/audit-logs" || strings.Contains(path, "/audit-events") {
+			return "orp:audit:read"
+		}
+		return "orp:read"
+	}
+	if strings.HasPrefix(path, "/api/orp/publish/") || path == "/api/orp/publish" || strings.HasSuffix(path, "/runtime-configurations") {
+		return "orp:publish"
+	}
+	if strings.HasSuffix(path, "/agent/reload") || strings.HasSuffix(path, "/agent/certificate") || strings.HasSuffix(path, "/status") && strings.Contains(path, "/nodes/") {
+		return "orp:node:operate"
+	}
+	if strings.HasPrefix(path, "/api/orp/geoip-database/import") ||
+		strings.HasPrefix(path, "/api/orp/alert-channels") ||
+		strings.HasPrefix(path, "/api/orp/tls-alert-rules") ||
+		strings.HasPrefix(path, "/api/orp/tls-alerts") {
+		return "orp:system:manage"
+	}
+	return "orp:config:write"
+}
+
+func (s *Server) secureLegacy(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		user, ok := s.orpIdentity(w, r)
+		if !ok {
+			return
+		}
+		if r.PathValue("centerID") != "" {
+			next(w, r)
+			return
+		}
+		roles, err := s.accountRoles(r, user)
+		if err != nil {
+			orpFailure(w, 500, "读取权限失败")
+			return
+		}
+		permission := requiredORPPermission(r)
+		if !accountHasGlobalCenterPermission(roles, permission) {
+			orpFailure(w, http.StatusForbidden, "该旧版接口不支持按中心范围筛选")
+			return
+		}
+		next(w, r)
+	}
+}
+
 func (s *Server) orpList(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	actor, ok := s.orpIdentity(w, r)
+	if !ok {
 		return
 	}
 	kind := r.PathValue("kind")
@@ -80,6 +259,21 @@ func (s *Server) orpList(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		orpFailure(w, 500, "读取资源失败")
 		return
+	}
+	roles, err := s.accountRoles(r, actor)
+	if err != nil {
+		orpFailure(w, 500, "读取权限失败")
+		return
+	}
+	permission := requiredORPPermission(r)
+	if !accountHasGlobalCenterPermission(roles, permission) {
+		filtered := items[:0]
+		for _, item := range items {
+			if s.documentCenterScopeAllowed(r, roles, permission, kind, item) {
+				filtered = append(filtered, item)
+			}
+		}
+		items = filtered
 	}
 	if kind == "centers" {
 		for _, item := range items {
@@ -266,6 +460,16 @@ func (s *Server) orpCreate(w http.ResponseWriter, r *http.Request) {
 		orpFailure(w, 400, err.Error())
 		return
 	}
+	roles, err := s.accountRoles(r, actor)
+	if err != nil {
+		orpFailure(w, 500, "读取权限失败")
+		return
+	}
+	permission := requiredORPPermission(r)
+	if kind == "centers" && !accountHasGlobalCenterPermission(roles, permission) || !accountHasCenterPermission(roles, permission, centerIDString(body["centerId"])) {
+		orpFailure(w, 403, "当前角色无权在该中心创建资源")
+		return
+	}
 	if err := s.orpValidate(r.Context(), kind, 0, body); err != nil {
 		orpFailure(w, 409, err.Error())
 		return
@@ -341,6 +545,16 @@ func (s *Server) orpUpdate(w http.ResponseWriter, r *http.Request) {
 		orpFailure(w, 400, err.Error())
 		return
 	}
+	roles, err := s.accountRoles(r, actor)
+	if err != nil {
+		orpFailure(w, 500, "读取权限失败")
+		return
+	}
+	permission := requiredORPPermission(r)
+	if !accountHasCenterPermission(roles, permission, centerIDString(body["centerId"])) {
+		orpFailure(w, 403, "当前角色无权将资源调整到该中心")
+		return
+	}
 	if err := s.orpValidate(r.Context(), kind, id, body); err != nil {
 		orpFailure(w, 409, err.Error())
 		return
@@ -363,6 +577,10 @@ func (s *Server) orpUpdate(w http.ResponseWriter, r *http.Request) {
 	var old orpDocument
 	if err := json.Unmarshal(previous, &old); err != nil {
 		orpFailure(w, 500, "资源数据损坏")
+		return
+	}
+	if kind == "centers" && !accountHasCenterPermission(roles, permission, strconv.FormatInt(id, 10)) && !accountHasCenterPermission(roles, permission, centerIDString(old["legacyId"])) || !accountHasCenterPermission(roles, permission, centerIDString(old["centerId"])) {
+		orpFailure(w, 403, "当前角色无权修改该中心资源")
 		return
 	}
 	if kind == "nodes" {

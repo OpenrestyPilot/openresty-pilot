@@ -47,6 +47,10 @@ WHERE i.id=? AND i.status='success'`, historyID).Scan(&nodeID, &centerID, &sourc
 		orpFailure(w, 409, err.Error())
 		return
 	}
+	if !s.publishNodesWithinScope(r, actor, nodes) {
+		orpFailure(w, http.StatusForbidden, "无权回滚该节点所属中心")
+		return
+	}
 	node := nodes[nodeID]
 	if err := demoNodeReady(r.Context(), node); err != nil {
 		orpFailure(w, 409, err.Error())

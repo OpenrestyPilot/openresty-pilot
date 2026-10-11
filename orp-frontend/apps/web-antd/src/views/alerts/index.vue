@@ -324,7 +324,7 @@ onMounted(loadData);
               Webhook 使用 JSON POST，可配置 HMAC 签名；飞书机器人支持文本和交互式消息卡片。
             </p>
           </div>
-          <Button type="primary" @click="openCreateChannel">新增通道</Button>
+          <Button v-access:code="'orp:system:manage'" type="primary" @click="openCreateChannel">新增通道</Button>
         </div>
         <Table
           :columns="channelColumns"
@@ -345,6 +345,7 @@ onMounted(loadData);
             </template>
             <template v-else-if="column.key === 'enabled'">
               <Switch
+                v-access:code="'orp:system:manage'"
                 :checked="record.enabled"
                 checked-children="启用"
                 un-checked-children="停用"
@@ -356,12 +357,13 @@ onMounted(loadData);
                 <Button
                   :loading="testingChannelId === record.id"
                   size="small"
+                  v-access:code="'orp:system:manage'"
                   @click="testChannel(asAlertChannel(record))"
                 >
                   测试
                 </Button>
-                <Button size="small" @click="openEditChannel(asAlertChannel(record))">编辑</Button>
-                <Button danger size="small" @click="confirmDeleteChannel(asAlertChannel(record))">
+                <Button v-access:code="'orp:system:manage'" size="small" @click="openEditChannel(asAlertChannel(record))">编辑</Button>
+                <Button v-access:code="'orp:system:manage'" danger size="small" @click="confirmDeleteChannel(asAlertChannel(record))">
                   删除
                 </Button>
               </Space>
@@ -384,7 +386,7 @@ onMounted(loadData);
               到期日进入设置的提醒天数后，每天最多推送一次；失败消息会在 5 分钟后重试。
             </p>
           </div>
-          <Button :loading="checkingAlerts" @click="runCheck">立即检查</Button>
+          <Button v-access:code="'orp:system:manage'" :loading="checkingAlerts" @click="runCheck">立即检查</Button>
         </div>
         <div class="px-4 pt-3 text-xs text-muted-foreground">
           每张 TLS 证书可独立启用提醒、设置提前天数，并关联一个或多个推送通道。
@@ -437,7 +439,7 @@ onMounted(loadData);
               />
             </template>
             <template v-else-if="column.key === 'actions'">
-              <Button size="small" type="primary" @click="saveRule(asTLSAlertRule(record))">
+              <Button v-access:code="'orp:system:manage'" size="small" type="primary" @click="saveRule(asTLSAlertRule(record))">
                 保存
               </Button>
             </template>

@@ -59,6 +59,11 @@ func (s *Server) orpLogs(w http.ResponseWriter, r *http.Request) {
 		orpFailure(w, 500, "日志目标损坏")
 		return
 	}
+	roles, err := s.accountRoles(r, usernameFromToken(r.Header.Get("Authorization")))
+	if err != nil || !s.documentCenterScopeAllowed(r, roles, "orp:read", kind, resource) {
+		orpFailure(w, http.StatusForbidden, "无权访问该日志目标所属中心")
+		return
+	}
 	kafkaLines, _, hasKafka, err := s.kafkaLogLines(r.Context(), kind, id, resource, 0, 100)
 	if err != nil {
 		orpFailure(w, 500, "读取 Kafka 日志失败")

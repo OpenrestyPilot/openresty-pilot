@@ -6,7 +6,7 @@ import type {
   DashboardTrends,
 } from './types';
 
-import { requestClient } from '#/api/request';
+import { redirectToLoginOnUnauthorized, requestClient } from '#/api/request';
 import { useAccessStore } from '@vben/stores';
 
 export interface DashboardEventSnapshot {
@@ -35,8 +35,12 @@ export async function consumeDashboardEvents(
     signal,
   });
   if (!response.ok || !response.body) {
-    if (response.status === 401 || response.status === 403) {
-      throw new Error('登录状态已失效，请重新登录');
+    if (response.status === 401) {
+      await redirectToLoginOnUnauthorized();
+      throw new Error('登录状态已失效，正在跳转登录页');
+    }
+    if (response.status === 403) {
+      throw new Error('当前账号没有查看大盘的权限');
     }
     throw new Error(`大盘实时连接失败（HTTP ${response.status}）`);
   }
@@ -62,7 +66,8 @@ export async function consumeDashboardEvents(
         const payload = data.join('\n');
         if (event === 'dashboard') onSnapshot(JSON.parse(payload) as DashboardEventSnapshot);
         else if (event === 'dashboard-auth-error') {
-          throw new Error('登录状态已失效，请重新登录');
+          await redirectToLoginOnUnauthorized();
+          throw new Error('登录状态已失效，正在跳转登录页');
         }
         else if (event === 'dashboard-error') {
           const parsed = JSON.parse(payload) as { message?: string };

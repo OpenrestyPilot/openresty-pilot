@@ -172,8 +172,8 @@ function onDelete(row: StreamService) {
   >
     <Grid table-title="Stream 服务列表">
       <template #toolbar-tools>
-        <Button class="mr-2" @click="onDirectives">Stream 块配置</Button>
-        <Button type="primary" @click="onCreate">新建服务</Button>
+        <Button v-access:code="'orp:config:write'" class="mr-2" @click="onDirectives">Stream 块配置</Button>
+        <Button v-access:code="'orp:config:write'" type="primary" @click="onCreate">新建服务</Button>
       </template>
       <template #protocol="{ row }">
         <Tag :color="row.protocol === 'tcp' ? 'blue' : 'purple'">
@@ -202,8 +202,8 @@ function onDelete(row: StreamService) {
       </template>
       <template #action="{ row }">
         <Button size="small" type="link" @click="onLogs(row)">日志</Button>
-        <Button size="small" type="link" @click="onEdit(row)">编辑</Button>
-        <Button danger size="small" type="link" @click="onDelete(row)">删除</Button>
+        <Button v-access:code="'orp:config:write'" size="small" type="link" @click="onEdit(row)">编辑</Button>
+        <Button v-access:code="'orp:config:write'" danger size="small" type="link" @click="onDelete(row)">删除</Button>
       </template>
     </Grid>
     <StreamForm @success="() => gridApi.query()" />

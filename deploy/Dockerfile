@@ -21,7 +21,7 @@ FROM scratch AS binary
 COPY --from=app-build /out/openresty-plus /openresty-plus
 
 FROM alpine:3.22 AS runtime
-RUN apk add --no-cache ca-certificates tzdata \
+RUN apk add --no-cache ca-certificates tzdata docker-cli \
  && mkdir -p /workspace/runtime
 COPY --from=app-build /out/openresty-plus /usr/local/bin/openresty-plus
 WORKDIR /workspace

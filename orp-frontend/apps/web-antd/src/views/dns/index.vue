@@ -141,7 +141,7 @@ function onDelete(row: DnsResolver) {
   >
     <Grid table-title="DNS Resolver 列表">
       <template #toolbar-tools>
-        <Button type="primary" @click="onCreate">新增解析器</Button>
+        <Button v-access:code="'orp:config:write'" type="primary" @click="onCreate">新增解析器</Button>
       </template>
       <template #layer>
         <Tooltip
@@ -161,8 +161,8 @@ function onDelete(row: DnsResolver) {
       <template #timeout="{ row }">{{ row.timeoutSec }} 秒</template>
       <template #cache="{ row }">{{ row.cacheTtlSec }} 秒</template>
       <template #action="{ row }">
-        <Button size="small" type="link" @click="onEdit(row)">编辑</Button>
-        <Button danger size="small" type="link" @click="onDelete(row)">删除</Button>
+        <Button v-access:code="'orp:config:write'" size="small" type="link" @click="onEdit(row)">编辑</Button>
+        <Button v-access:code="'orp:config:write'" danger size="small" type="link" @click="onDelete(row)">删除</Button>
       </template>
     </Grid>
     <DnsForm @success="() => gridApi.query()" />

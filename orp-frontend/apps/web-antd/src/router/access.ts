@@ -5,6 +5,8 @@ import type {
 
 import { generateAccessible } from '@vben/access';
 import { preferences } from '@vben/preferences';
+import { useAccessStore } from '@vben/stores';
+import { mapTree } from '@vben/utils';
 
 import { message } from 'ant-design-vue';
 
@@ -17,6 +19,25 @@ const forbiddenComponent = () => import('#/views/_core/fallback/forbidden.vue');
 async function generateAccess(options: GenerateMenuAndRoutesOptions) {
   const pageMap: ComponentRecordType = import.meta.glob('../views/**/*.vue');
 
+  const roleOnlyRoutes = new Set(['System', 'SystemUser', 'SystemRole', 'SystemPerm']);
+  const permissionByRoute: Record<string, string> = {
+    AuditLog: 'orp:audit:read',
+    ConfigPublish: 'orp:publish',
+  };
+  const requiredPermissions = ['orp:read', 'orp:audit:read', 'orp:publish'];
+  const assignedCodes = useAccessStore().accessCodes;
+  const accessCodes = assignedCodes.includes('*')
+    ? [...new Set([...assignedCodes, ...requiredPermissions])]
+    : assignedCodes;
+  const routes = mapTree(options.routes, (route) => {
+    if (typeof route.name !== 'string' || route.name === 'Profile') return route;
+    const authority = roleOnlyRoutes.has(route.name)
+      ? ['super']
+      : [permissionByRoute[route.name] ?? 'orp:read'];
+    route.meta = { ...route.meta!, authority };
+    return route;
+  });
+
   const layoutMap: ComponentRecordType = {
     BasicLayout,
     IFrameView,
@@ -24,6 +45,8 @@ async function generateAccess(options: GenerateMenuAndRoutesOptions) {
 
   return await generateAccessible(preferences.app.accessMode, {
     ...options,
+    roles: [...(options.roles ?? []), ...accessCodes],
+    routes,
     fetchMenuListAsync: async () => {
       message.loading({
         content: `${$t('common.loadingMenu')}...`,

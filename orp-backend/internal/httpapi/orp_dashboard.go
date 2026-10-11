@@ -55,6 +55,11 @@ func (s *Server) dashboardInput(w http.ResponseWriter, r *http.Request) (dashboa
 		}
 		input.centerIDs = []int64{id}
 	} else {
+		roles, err := s.accountRoles(r, usernameFromToken(r.Header.Get("Authorization")))
+		if err != nil {
+			orpFailure(w, 500, "读取权限失败")
+			return input, false
+		}
 		centers, err := s.orpLoad(r.Context(), "centers")
 		if err != nil {
 			orpFailure(w, 500, "读取中心失败")
@@ -62,7 +67,9 @@ func (s *Server) dashboardInput(w http.ResponseWriter, r *http.Request) (dashboa
 		}
 		for _, center := range centers {
 			id, _ := resourceNumber(center["id"])
-			input.centerIDs = append(input.centerIDs, id)
+			if accountHasCenterPermission(roles, "orp:read", strconv.FormatInt(id, 10)) {
+				input.centerIDs = append(input.centerIDs, id)
+			}
 		}
 	}
 	input.events = []accessEvent{}

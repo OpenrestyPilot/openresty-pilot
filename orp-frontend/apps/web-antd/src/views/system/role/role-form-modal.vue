@@ -8,7 +8,7 @@ import { useVbenModal } from '@vben/common-ui';
 import { message } from 'ant-design-vue';
 
 import { useVbenForm, z } from '#/adapter/form';
-import { createRbacRoleApi, updateRbacRoleApi } from '#/api';
+import { createRbacRoleApi, listCentersApi, updateRbacRoleApi } from '#/api';
 import { useDirtyGuard } from '#/composables/use-dirty-guard';
 
 defineOptions({ name: 'SystemRoleFormModal' });
@@ -49,6 +49,23 @@ const [Form, formApi] = useVbenForm({
       label: '角色描述',
     },
     {
+      component: 'ApiSelect',
+      componentProps: {
+        api: async () => {
+          const res = await listCentersApi({ page: 1, pageSize: 200 });
+          return [
+            { label: '全部中心', value: '*' },
+            ...res.items.map((center) => ({ label: center.name, value: String(center.id) })),
+          ];
+        },
+        mode: 'multiple',
+        placeholder: '选择允许访问的中心；不选择时仅能访问全局配置',
+      },
+      fieldName: 'centerIds',
+      label: '中心范围',
+      help: '此范围同时限制中心列表、节点及其代理配置。全部中心不能与单独中心同时选择。',
+    },
+    {
       component: 'RadioGroup',
       componentProps: {
         options: [
@@ -86,9 +103,10 @@ const [Modal, modalApi] = useVbenModal<{ record?: RbacRoleItem }>({
           code: record.code,
           description: record.description ?? '',
           name: record.name,
+          centerIds: record.centerIds ?? [],
         });
       } else {
-        formApi.setValues({ _edit: false });
+        formApi.setValues({ _edit: false, centerIds: [] });
       }
       resetDirty();
     }
@@ -101,12 +119,14 @@ async function onSubmit(values: Record<string, any>) {
     if (isEdit.value) {
       await updateRbacRoleApi(editId.value, {
         description: values.description ?? '',
+        centerIds: values.centerIds ?? [],
         name: String(values.name),
       });
       message.success('角色信息已更新');
     } else {
       await createRbacRoleApi({
         code: String(values.code),
+        centerIds: values.centerIds ?? [],
         description: values.description ?? '',
         name: String(values.name),
         status: values.status ?? 'enabled',

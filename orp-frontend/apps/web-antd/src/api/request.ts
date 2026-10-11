@@ -21,6 +21,21 @@ import { refreshTokenApi } from './core';
 
 const { apiURL } = useAppConfig(import.meta.env, import.meta.env.PROD);
 
+let redirectingToLogin: null | Promise<void> = null;
+
+/** SSE uses fetch directly, so route expired credentials through the same logout flow. */
+export function redirectToLoginOnUnauthorized() {
+  if (!redirectingToLogin) {
+    const accessStore = useAccessStore();
+    const authStore = useAuthStore();
+    accessStore.setAccessToken(null);
+    redirectingToLogin = authStore.logout().finally(() => {
+      redirectingToLogin = null;
+    });
+  }
+  return redirectingToLogin;
+}
+
 function createRequestClient(baseURL: string, options?: RequestClientOptions) {
   const client = new RequestClient({
     ...options,

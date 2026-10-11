@@ -1,11 +1,12 @@
 <script lang="ts" setup>
 import type { Certificate } from '#/api';
 
-import { reactive, ref } from 'vue';
+import { computed, reactive, ref } from 'vue';
 
 import { useVbenModal } from '@vben/common-ui';
 
-import { message } from 'ant-design-vue';
+import { Alert, message } from 'ant-design-vue';
+import { useAccessStore } from '@vben/stores';
 
 import { useVbenForm, z } from '#/adapter/form';
 import { createCertificateApi, updateCertificateApi, listCentersApi } from '#/api';
@@ -13,6 +14,11 @@ import { parseCertificate } from '#/utils/x509';
 import { useDirtyGuard } from '#/composables/use-dirty-guard';
 
 defineOptions({ name: 'TlsFormModal' });
+
+const canReadSecrets = computed(() => {
+  const codes = useAccessStore().accessCodes;
+  return codes.includes('*') || codes.includes('orp:secrets:read');
+});
 
 const emit = defineEmits<{ success: [] }>();
 
@@ -136,7 +142,7 @@ const [Form, formApi] = useVbenForm({
       fieldName: 'privateKey',
       help: 'PEM 格式私钥，保存后不再回显明文',
       label: '私钥',
-      rules: z.string().refine((value) => value.includes('PRIVATE KEY'), {
+      rules: z.string().optional().refine((value) => !value || value.includes('PRIVATE KEY'), {
         message: '私钥格式错误：缺少 PEM 格式 PRIVATE KEY 头',
       }),
     },
@@ -159,7 +165,7 @@ const [Modal, modalApi] = useVbenModal<{ record?: Certificate }>({
       editId.value = record?.id ?? 0;
       modalApi.setState({ title: record ? '编辑证书' : '录入证书' });
       if (record) {
-        const certRes = await fetchCertificateDetail(record.id);
+        const certRes = canReadSecrets.value ? await fetchCertificateDetail(record.id) : null;
         if (certRes) {
           formApi.setValues({
             certificate: certRes.certificate,
@@ -175,6 +181,18 @@ const [Modal, modalApi] = useVbenModal<{ record?: Certificate }>({
           parsed.domains = record.domains;
           parsed.notAfter = record.notAfter;
           parsed.notBefore = record.notBefore;
+        } else if (!canReadSecrets.value) {
+          const publicDetail = await fetchCertificatePublicDetail(record.id);
+          formApi.setValues({
+            certificate: publicDetail?.certificate ?? '',
+            certificateChain: publicDetail?.certificateChain ?? '',
+            centerIds: Array.isArray(record.centerScope) ? record.centerScope : [],
+            domains: record.domains,
+            name: record.name,
+            privateKey: '',
+            scopeType: record.centerScope === 'all' ? 'all' : 'partial',
+            validRange: [record.notBefore, record.notAfter],
+          });
         }
       }
       resetDirty();
@@ -190,7 +208,7 @@ function resetParsed() {
   parsed.subjectCn = '';
 }
 
-/** 编辑时拉取证书明文（含私钥），用于校验展示 */
+/** 仅具备敏感数据读取权限的角色可读取证书明文（含私钥）。 */
 async function fetchCertificateDetail(id: number) {
   try {
     const { requestClient } = await import('#/api/request');
@@ -201,6 +219,18 @@ async function fetchCertificateDetail(id: number) {
     }>(`/orp/certificates/${id}/detail`);
   } catch {
     message.warning('证书明文加载失败，编辑保存将覆盖原内容');
+    return null;
+  }
+}
+
+async function fetchCertificatePublicDetail(id: number) {
+  try {
+    const { requestClient } = await import('#/api/request');
+    return await requestClient.get<{ certificate: string; certificateChain: string }>(
+      `/orp/certificates/${id}/public-detail`,
+    );
+  } catch {
+    message.warning('证书内容加载失败，暂时不能编辑该证书');
     return null;
   }
 }
@@ -235,6 +265,10 @@ async function handleParse(value: string) {
 }
 
 async function onSubmit(values: Record<string, any>) {
+  if (!isEdit.value && !String(values.privateKey ?? '').includes('PRIVATE KEY')) {
+    message.error('请填写 PEM 格式证书私钥');
+    return;
+  }
   if (parsed.error) {
     message.warning(parsed.error);
     return;
@@ -287,6 +321,13 @@ async function onSubmit(values: Record<string, any>) {
 
 <template>
   <Modal class="w-[680px]">
+    <Alert
+      v-if="isEdit && !canReadSecrets"
+      class="mb-4"
+      message="当前角色不能查看已有私钥。提交时留空会保留已保存的私钥。"
+      show-icon
+      type="info"
+    />
     <div v-if="parsed.error" class="mb-2 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-600 dark:border-red-900 dark:bg-red-950 dark:text-red-400">
       {{ parsed.error }}
     </div>

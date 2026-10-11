@@ -99,7 +99,7 @@ function onDelete(row: Center) {
   >
     <Grid table-title="中心列表">
       <template #toolbar-tools>
-        <Button type="primary" @click="onCreate">新建中心</Button>
+        <Button v-access:code="'orp:config:write'" type="primary" @click="onCreate">新建中心</Button>
       </template>
       <template #layer>
         <Tooltip
@@ -114,8 +114,8 @@ function onDelete(row: Center) {
         </Tooltip>
       </template>
       <template #action="{ row }">
-        <Button size="small" type="link" @click="onEdit(row)">编辑</Button>
-        <Button danger size="small" type="link" @click="onDelete(row)">
+        <Button v-access:code="'orp:config:write'" size="small" type="link" @click="onEdit(row)">编辑</Button>
+        <Button v-access:code="'orp:config:write'" danger size="small" type="link" @click="onDelete(row)">
           删除
         </Button>
       </template>

@@ -226,7 +226,7 @@
                 },
                 "example": {
                   "code": -1,
-                  "message": "当前角色无写入权限",
+                  "message": "缺少系统运维管理权限",
                   "data": null
                 }
               }
@@ -430,7 +430,7 @@
         "tags": [
           "rbac"
         ],
-        "summary": "新增角色",
+        "summary": "新增角色（配置权限与中心范围）",
         "operationId": "createRbacRole",
         "requestBody": {
           "content": {
@@ -440,7 +440,7 @@
               }
             }
           },
-          "description": "code/name/description/status"
+          "description": "code/name/description/status/permissionKeys/centerIds；centerIds 使用 * 表示全部中心"
         },
         "responses": {
           "200": {
@@ -454,7 +454,7 @@
         "tags": [
           "rbac"
         ],
-        "summary": "编辑角色（内置角色仅可改描述/名称）",
+        "summary": "编辑自定义角色（权限与中心范围）",
         "operationId": "updateRbacRole",
         "parameters": [
           {
@@ -466,6 +466,16 @@
             }
           }
         ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "description": "name/description/status/permissionKeys/centerIds"
+        },
         "responses": {
           "200": {
             "description": "RbacRoleItem"
@@ -500,7 +510,7 @@
         "tags": [
           "rbac"
         ],
-        "summary": "权限定义树（菜单 + 操作点）",
+        "summary": "可分配的全局权限项",
         "operationId": "listRbacPermissions",
         "responses": {
           "200": {
@@ -1490,7 +1500,7 @@
             }
           }
         ],
-        "description": "仅超级管理员。登记 Agent ID 和客户端叶证书 SHA-256 指纹；发送 revoke=true 可撤销当前指纹并使未完成任务失效。证书签发由运维侧完成。",
+        "description": "需要节点运维权限。登记 Agent ID 和客户端叶证书 SHA-256 指纹；发送 revoke=true 可撤销当前指纹并使未完成任务失效。证书签发由运维侧完成。",
         "requestBody": {
           "required": true,
           "content": {
@@ -1533,7 +1543,7 @@
                 },
                 "example": {
                   "code": -1,
-                  "message": "仅超级管理员可登记证书",
+                  "message": "缺少节点运维权限",
                   "data": null
                 }
               }
@@ -1576,10 +1586,25 @@
             }
           }
         ],
-        "description": "仅超级管理员；只允许固定 reload 操作，任务有效期两分钟。",
+        "description": "需要节点运维权限；只允许固定 reload 操作，任务有效期两分钟。",
         "responses": {
           "201": {
             "description": "已排队任务 ID"
+          },
+          "403": {
+            "description": "失败（code=-1，403）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseError"
+                },
+                "example": {
+                  "code": -1,
+                  "message": "缺少节点运维权限",
+                  "data": null
+                }
+              }
+            }
           },
           "409": {
             "description": "失败（code=-1，409）",
@@ -1618,7 +1643,7 @@
             }
           }
         ],
-        "description": "仅超级管理员；最多返回最近 50 个任务及结果。",
+        "description": "需要查看平台配置权限；最多返回最近 50 个任务及结果。",
         "responses": {
           "200": {
             "description": "Agent 任务列表"
@@ -1632,7 +1657,7 @@
                 },
                 "example": {
                   "code": -1,
-                  "message": "仅超级管理员可查询 Agent 任务",
+                  "message": "缺少查看平台配置权限",
                   "data": null
                 }
               }
@@ -2832,6 +2857,48 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "失败（code=-1，404）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiResponseError"
+                },
+                "example": {
+                  "code": -1,
+                  "message": "证书不存在或已被删除",
+                  "data": null
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/orp/certificates/{id}/public-detail": {
+      "get": {
+        "tags": [
+          "tls"
+        ],
+        "summary": "查询证书公开内容（不含私钥）",
+        "description": "返回 PEM 公钥证书和证书链；读取私钥仍需 orp:secrets:read。",
+        "operationId": "getCertificatePublicDetail",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "资源 ID",
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "{ certificate, certificateChain }"
           },
           "404": {
             "description": "失败（code=-1，404）",
@@ -4094,7 +4161,7 @@
           "audit"
         ],
         "summary": "分页查询审计日志",
-        "description": "按模块 / 操作类型 / 操作人 / 时间范围组合检索，按时间倒序返回。",
+        "description": "需要审计读取权限。按模块 / 操作类型 / 操作人 / 时间范围组合检索，按时间倒序返回。",
         "operationId": "listAuditLogs",
         "parameters": [
           {

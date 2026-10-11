@@ -200,6 +200,22 @@ func usernameFromToken(header string) string {
 type accountRole struct {
 	Code        string
 	Permissions []string
+	CenterIDs   []string
+}
+
+func normalizePermissionKeys(keys []string) []string {
+	result := make([]string, 0, len(keys))
+	seen := map[string]bool{}
+	for _, key := range keys {
+		if key == "orp:write" {
+			key = "orp:config:write"
+		}
+		if !seen[key] {
+			seen[key] = true
+			result = append(result, key)
+		}
+	}
+	return result
 }
 
 func (s *Server) accountRoles(r *http.Request, username string) ([]accountRole, error) {
@@ -214,8 +230,8 @@ func (s *Server) accountRoles(r *http.Request, username string) ([]accountRole, 
 	result := []accountRole{}
 	for _, id := range ids {
 		var code string
-		var raw []byte
-		err := s.db.QueryRowContext(r.Context(), "SELECT code,permission_keys FROM orp_role WHERE id=? AND status='enabled'", id).Scan(&code, &raw)
+		var raw, centerIDsRaw []byte
+		err := s.db.QueryRowContext(r.Context(), "SELECT code,permission_keys,center_ids FROM orp_role WHERE id=? AND status='enabled'", id).Scan(&code, &raw, &centerIDsRaw)
 		if err == sql.ErrNoRows {
 			continue
 		}
@@ -226,7 +242,12 @@ func (s *Server) accountRoles(r *http.Request, username string) ([]accountRole, 
 		if err := json.Unmarshal(raw, &permissions); err != nil {
 			return nil, err
 		}
-		result = append(result, accountRole{Code: code, Permissions: permissions})
+		permissions = normalizePermissionKeys(permissions)
+		var centerIDs []string
+		if err := json.Unmarshal(centerIDsRaw, &centerIDs); err != nil {
+			return nil, err
+		}
+		result = append(result, accountRole{Code: code, Permissions: permissions, CenterIDs: centerIDs})
 	}
 	return result, nil
 }

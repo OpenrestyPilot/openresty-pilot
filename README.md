@@ -2,6 +2,22 @@
 
 OpenResty Plus 是 OpenResty 集群管理平台。前端和后端源码分别位于 `orp-frontend/` 与 `orp-backend/`；构建时会把 Vue 管理界面嵌入 Go 服务，生成一个同时提供管理页面和 API 的可执行文件。此仓库负责编译单体程序和制作它的 Docker 镜像。OpenResty 节点、Filebeat 及本地演示环境由独立的 [orp-quickstart](https://github.com/OpenrestyPlus/orp-quickstart) 仓库管理。
 
+## 平台截图
+
+以下截图来自本地运行的平台演示环境。
+
+### 控制面大盘
+
+![控制面大盘：查看请求、带宽和服务状态](docs/screenshots/dashboard.png)
+
+### 节点实例
+
+![节点实例：查看已接入的 OpenResty 节点及在线状态](docs/screenshots/nodes.png)
+
+### 配置比对与下发
+
+![配置比对与下发：查看待下发节点并进入配置差异审查](docs/screenshots/config-publish.png)
+
 ## 编译可执行文件
 
 构建环境要求：Go 1.26.1、Node.js 22.18+ 或 24.12+、pnpm 11.16.0。首次构建会自动安装前端依赖：

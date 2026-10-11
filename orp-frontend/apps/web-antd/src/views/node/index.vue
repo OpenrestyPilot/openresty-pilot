@@ -261,7 +261,7 @@ function onDelete(row: NodeItem) {
   >
     <Grid table-title="节点列表">
       <template #toolbar-tools>
-        <Button type="primary" @click="onCreate">注册节点</Button>
+        <Button v-access:code="'orp:config:write'" type="primary" @click="onCreate">注册节点</Button>
       </template>
       <template #weight="{ row }">
         <span :class="`inline-flex items-center gap-1 rounded border px-2 py-0.5 text-xs ${row.weight <= 1 ? 'border-amber-200 bg-amber-50 text-amber-700' : 'border-gray-200 bg-gray-50 text-gray-600 dark:border-gray-600 dark:bg-gray-800 dark:text-gray-300'}`">
@@ -271,6 +271,7 @@ function onDelete(row: NodeItem) {
       <template #status="{ row }">
         <Tooltip title="点击修改运行状态">
           <button
+            v-access:code="'orp:node:operate'"
             :class="`inline-flex cursor-pointer items-center gap-1 rounded border px-2 py-0.5 text-xs transition-shadow hover:shadow-md ${(STATUS_META[row.status] ?? STATUS_META.running).pill}`"
             :data-status="row.status"
             data-status-pill
@@ -324,8 +325,8 @@ function onDelete(row: NodeItem) {
         <Button size="small" type="link" @click="onLatency(row)">延迟趋势</Button>
         <Button size="small" type="link" @click="onMetrics(row)">指标</Button>
         <Button size="small" type="link" @click="onLogs(row)">日志</Button>
-        <Button size="small" type="link" @click="onEdit(row)">编辑</Button>
-        <Button danger size="small" type="link" @click="onDelete(row)">删除</Button>
+        <Button v-access:code="'orp:config:write'" size="small" type="link" @click="onEdit(row)">编辑</Button>
+        <Button v-access:code="'orp:config:write'" danger size="small" type="link" @click="onDelete(row)">删除</Button>
       </template>
     </Grid>
     <NodeForm @success="() => gridApi.query()" />

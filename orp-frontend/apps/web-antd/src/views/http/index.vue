@@ -161,8 +161,8 @@ function onDelete(row: HttpListener) {
   >
     <Grid table-title="监听与域名列表">
       <template #toolbar-tools>
-        <Button class="mr-2" @click="onDirectives">HTTP 块指令</Button>
-        <Button type="primary" @click="onCreate">新建监听</Button>
+        <Button v-access:code="'orp:config:write'" class="mr-2" @click="onDirectives">HTTP 块指令</Button>
+        <Button v-access:code="'orp:config:write'" type="primary" @click="onCreate">新建监听</Button>
       </template>
       <template #layer>
         <Tooltip
@@ -181,15 +181,15 @@ function onDelete(row: HttpListener) {
         <Tag v-else>明文</Tag>
       </template>
       <template #routes="{ row }">
-        <Button size="small" type="link" @click="onRoutes(row)">
+        <Button v-access:code="'orp:config:write'" size="small" type="link" @click="onRoutes(row)">
           {{ row.routeCount }} 条规则
         </Button>
       </template>
       <template #action="{ row }">
-        <Button size="small" type="link" @click="onRoutes(row)">路由</Button>
+        <Button v-access:code="'orp:config:write'" size="small" type="link" @click="onRoutes(row)">路由</Button>
         <Button size="small" type="link" @click="onLogs(row)">日志</Button>
-        <Button size="small" type="link" @click="onEdit(row)">编辑</Button>
-        <Button danger size="small" type="link" @click="onDelete(row)">删除</Button>
+        <Button v-access:code="'orp:config:write'" size="small" type="link" @click="onEdit(row)">编辑</Button>
+        <Button v-access:code="'orp:config:write'" danger size="small" type="link" @click="onDelete(row)">删除</Button>
       </template>
     </Grid>
     <HttpForm @success="() => gridApi.query()" />

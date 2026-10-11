@@ -80,6 +80,22 @@ func (s *Server) publishNodes(ctx context.Context, ids []int64) (map[int64]orpDo
 	return nodes, groups, nil
 }
 
+func (s *Server) publishNodesWithinScope(r *http.Request, actor string, nodes map[int64]orpDocument) bool {
+	roles, err := s.accountRoles(r, actor)
+	if err != nil {
+		return false
+	}
+	if accountHasGlobalCenterPermission(roles, "orp:publish") {
+		return true
+	}
+	for _, node := range nodes {
+		if !accountHasCenterPermission(roles, "orp:publish", centerIDString(node["centerId"])) {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) freezeCandidate(ctx context.Context, actor string, centerID int64, targetIDs []int64) (publishCandidate, orpRelease, error) {
 	var candidate publishCandidate
 	var release orpRelease
@@ -152,9 +168,13 @@ func (s *Server) orpPublishPrecheck(w http.ResponseWriter, r *http.Request) {
 		orpFailure(w, 400, err.Error())
 		return
 	}
-	_, groups, err := s.publishNodes(r.Context(), ids)
+	nodes, groups, err := s.publishNodes(r.Context(), ids)
 	if err != nil {
 		orpFailure(w, 400, err.Error())
+		return
+	}
+	if !s.publishNodesWithinScope(r, actor, nodes) {
+		orpFailure(w, http.StatusForbidden, "所选节点包含无权访问的中心")
 		return
 	}
 	centerIDs := make([]int64, 0, len(groups))
@@ -359,6 +379,10 @@ func (s *Server) orpPublishCreate(w http.ResponseWriter, r *http.Request) {
 	nodes, groups, err := s.publishNodes(r.Context(), ids)
 	if err != nil {
 		orpFailure(w, 400, err.Error())
+		return
+	}
+	if !s.publishNodesWithinScope(r, actor, nodes) {
+		orpFailure(w, http.StatusForbidden, "所选节点包含无权访问的中心")
 		return
 	}
 	selectedByCenter := map[int64]selectedPublish{}
@@ -581,12 +605,17 @@ func nullRelease(value string) any {
 }
 
 func (s *Server) orpPublishBatch(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	requestActor, ok := s.orpIdentity(w, r)
+	if !ok {
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id < 1 {
 		orpFailure(w, 400, "批次 ID 无效")
+		return
+	}
+	if !s.publishBatchWithinScope(r, requestActor, id) {
+		orpFailure(w, http.StatusForbidden, "无权查看该批次中的节点")
 		return
 	}
 	var actor, mode, phase string

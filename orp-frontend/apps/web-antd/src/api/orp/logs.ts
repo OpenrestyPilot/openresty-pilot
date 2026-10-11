@@ -1,7 +1,7 @@
 /** 实时日志 API */
 import type { LogLine } from './types';
 
-import { requestClient } from '#/api/request';
+import { redirectToLoginOnUnauthorized, requestClient } from '#/api/request';
 import { useAccessStore } from '@vben/stores';
 
 /**
@@ -31,8 +31,12 @@ export async function consumeLogEvents(
     signal,
   });
   if (!response.ok || !response.body) {
-    if (response.status === 401 || response.status === 403) {
-      throw new Error('登录状态已失效，请重新登录');
+    if (response.status === 401) {
+      await redirectToLoginOnUnauthorized();
+      throw new Error('登录状态已失效，正在跳转登录页');
+    }
+    if (response.status === 403) {
+      throw new Error('当前账号没有查看实时日志的权限');
     }
     throw new Error(`日志实时连接失败（HTTP ${response.status}）`);
   }
@@ -56,6 +60,10 @@ export async function consumeLogEvents(
       if (data.length > 0) {
         const payload = data.join('\n');
         if (event === 'logs') onLines(JSON.parse(payload) as LogLine[]);
+        else if (event === 'log-auth-error') {
+          await redirectToLoginOnUnauthorized();
+          throw new Error('登录状态已失效，正在跳转登录页');
+        }
         else if (event === 'log-error') {
           const parsed = JSON.parse(payload) as { message?: string };
           onError(parsed.message || '读取 Kafka 日志失败');

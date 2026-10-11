@@ -49,6 +49,26 @@ func (s *Server) orpCertificateDetail(w http.ResponseWriter, r *http.Request) {
 	orpReply(w, 200, map[string]any{"certificate": body["certificate"], "certificateChain": body["certificateChain"], "privateKey": key})
 }
 
+func (s *Server) orpCertificatePublicDetail(w http.ResponseWriter, r *http.Request) {
+	if _, ok := s.orpIdentity(w, r); !ok {
+		return
+	}
+	id, ok := orpID(w, r)
+	if !ok {
+		return
+	}
+	body, err := s.orpRawDocument(r, "certificates", id)
+	if errors.Is(err, sql.ErrNoRows) {
+		orpFailure(w, 404, "证书不存在")
+		return
+	}
+	if err != nil {
+		orpFailure(w, 500, "读取证书失败")
+		return
+	}
+	orpReply(w, 200, map[string]any{"certificate": body["certificate"], "certificateChain": body["certificateChain"]})
+}
+
 func (s *Server) orpCertificateStats(w http.ResponseWriter, r *http.Request) {
 	if _, ok := s.orpIdentity(w, r); !ok {
 		return
@@ -118,12 +138,8 @@ func (s *Server) orpSecretAccess(w http.ResponseWriter, r *http.Request) bool {
 		orpFailure(w, 500, "读取权限失败")
 		return false
 	}
-	for _, role := range roles {
-		for _, permission := range role.Permissions {
-			if permission == "*" || permission == "orp:secrets:read" {
-				return true
-			}
-		}
+	if s.requestCenterScopeAllowed(r, roles, "orp:secrets:read") {
+		return true
 	}
 	orpFailure(w, 403, "无权查看敏感信息")
 	return false
@@ -147,6 +163,29 @@ func (s *Server) orpAuditList(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
 	where := []string{}
 	args := []any{}
+	roles, err := s.accountRoles(r, usernameFromToken(r.Header.Get("Authorization")))
+	if err != nil {
+		orpFailure(w, 500, "读取权限失败")
+		return
+	}
+	if !accountHasGlobalCenterPermission(roles, "orp:audit:read") {
+		centerID := query.Get("centerId")
+		centerIDs, _ := accountCenterIDs(roles, "orp:audit:read")
+		if centerID != "" {
+			centerIDs = []string{centerID}
+		}
+		if len(centerIDs) == 0 {
+			where = append(where, "1=0")
+		} else {
+			placeholders := strings.TrimRight(strings.Repeat("?,", len(centerIDs)), ",")
+			where = append(where, "((kind='centers' AND resource_id IN ("+placeholders+")) OR JSON_UNQUOTE(JSON_EXTRACT(before_document,'$.centerId')) IN ("+placeholders+") OR JSON_UNQUOTE(JSON_EXTRACT(after_document,'$.centerId')) IN ("+placeholders+"))")
+			for range 3 {
+				for _, id := range centerIDs {
+					args = append(args, id)
+				}
+			}
+		}
+	}
 	for _, filter := range []struct{ param, column string }{{"action", "action"}, {"operator", "actor"}} {
 		if value := strings.TrimSpace(query.Get(filter.param)); value != "" {
 			where = append(where, filter.column+"=?")

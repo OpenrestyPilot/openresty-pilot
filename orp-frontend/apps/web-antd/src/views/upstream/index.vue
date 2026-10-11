@@ -166,7 +166,7 @@ function onDelete(row: UpstreamGroup) {
   >
     <Grid table-title="Upstream 列表">
       <template #toolbar-tools>
-        <Button type="primary" @click="onCreate">新增上游组</Button>
+        <Button v-access:code="'orp:config:write'" type="primary" @click="onCreate">新增上游组</Button>
       </template>
       <template #layer>
         <Tooltip
@@ -227,8 +227,8 @@ function onDelete(row: UpstreamGroup) {
         </div>
       </template>
       <template #action="{ row }">
-        <Button size="small" type="link" @click="onEdit(row)">编辑</Button>
-        <Button danger size="small" type="link" @click="onDelete(row)">删除</Button>
+        <Button v-access:code="'orp:config:write'" size="small" type="link" @click="onEdit(row)">编辑</Button>
+        <Button v-access:code="'orp:config:write'" danger size="small" type="link" @click="onDelete(row)">删除</Button>
       </template>
     </Grid>
     <UpstreamForm @success="() => gridApi.query()" />

@@ -51,7 +51,8 @@ func (s *Server) currentCenterRelease(ctx context.Context, centerID int64, relea
 }
 
 func (s *Server) orpPublishSummary(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	actor, ok := s.orpIdentity(w, r)
+	if !ok {
 		return
 	}
 	nodes, err := s.orpLoad(r.Context(), "nodes")
@@ -60,9 +61,20 @@ func (s *Server) orpPublishSummary(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	groupsByID := map[int64][]map[string]any{}
+	roles, err := s.accountRoles(r, actor)
+	if err != nil {
+		orpFailure(w, 500, "读取权限失败")
+		return
+	}
 	for _, node := range nodes {
 		nodeID, _ := resourceNumber(node["id"])
 		centerID, _ := resourceNumber(node["centerId"])
+		if requested := r.URL.Query().Get("centerId"); requested != "" && requested != strconv.FormatInt(centerID, 10) {
+			continue
+		}
+		if !accountHasCenterPermission(roles, "orp:publish", strconv.FormatInt(centerID, 10)) {
+			continue
+		}
 		last, err := s.lastPublishedNode(r.Context(), nodeID)
 		lastChange := any(nil)
 		pending := errors.Is(err, sql.ErrNoRows)
@@ -137,6 +149,10 @@ func (s *Server) orpPublishDiff(w http.ResponseWriter, r *http.Request) {
 	nodes, _, err := s.publishNodes(r.Context(), []int64{nodeID})
 	if err != nil {
 		orpFailure(w, 404, err.Error())
+		return
+	}
+	if !s.publishNodesWithinScope(r, usernameFromToken(r.Header.Get("Authorization")), nodes) {
+		orpFailure(w, http.StatusForbidden, "无权查看该节点所属中心")
 		return
 	}
 	node := nodes[nodeID]
@@ -261,7 +277,8 @@ func (s *Server) publishEvents(ctx context.Context, centerID int64, since any) [
 }
 
 func (s *Server) orpPublishHistory(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	actor, ok := s.orpIdentity(w, r)
+	if !ok {
 		return
 	}
 	query := r.URL.Query()
@@ -278,6 +295,22 @@ func (s *Server) orpPublishHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	where := " WHERE i.status IN ('success','failed','aborted')"
 	args := []any{}
+	roles, err := s.accountRoles(r, actor)
+	if err != nil {
+		orpFailure(w, 500, "读取权限失败")
+		return
+	}
+	if !accountHasGlobalCenterPermission(roles, "orp:publish") && query.Get("centerId") == "" {
+		centerIDs, _ := accountCenterIDs(roles, "orp:publish")
+		if len(centerIDs) == 0 {
+			where += " AND 1=0"
+		} else {
+			where += " AND i.center_id IN (" + strings.TrimRight(strings.Repeat("?,", len(centerIDs)), ",") + ")"
+			for _, centerID := range centerIDs {
+				args = append(args, centerID)
+			}
+		}
+	}
 	for _, field := range []string{"centerId", "nodeId"} {
 		if raw := query.Get(field); raw != "" {
 			id, err := strconv.ParseInt(raw, 10, 64)
@@ -362,16 +395,42 @@ FROM orp_publish_item i JOIN orp_publish_batch b ON b.id=i.batch_id`+where+` ORD
 }
 
 func (s *Server) orpPublishHistoryStats(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	actor, ok := s.orpIdentity(w, r)
+	if !ok {
 		return
 	}
 	var total, success, failed, batches, abortedBatches int
-	if err := s.db.QueryRowContext(r.Context(), "SELECT COUNT(*),COALESCE(SUM(status='success'),0),COALESCE(SUM(status='failed'),0) FROM orp_publish_item WHERE status IN ('success','failed','aborted')").Scan(&total, &success, &failed); err != nil && !errors.Is(err, sql.ErrNoRows) {
+	centerID := r.URL.Query().Get("centerId")
+	where, args := "", []any{}
+	if centerID != "" {
+		where, args = " AND center_id=?", []any{centerID}
+	} else {
+		roles, err := s.accountRoles(r, actor)
+		if err != nil {
+			orpFailure(w, 500, "读取权限失败")
+			return
+		}
+		if !accountHasGlobalCenterPermission(roles, "orp:publish") {
+			centerIDs, _ := accountCenterIDs(roles, "orp:publish")
+			if len(centerIDs) == 0 {
+				where = " AND 1=0"
+			} else {
+				where = " AND center_id IN (" + strings.TrimRight(strings.Repeat("?,", len(centerIDs)), ",") + ")"
+				for _, id := range centerIDs {
+					args = append(args, id)
+				}
+			}
+		}
+	}
+	query := "SELECT COUNT(*),COALESCE(SUM(status='success'),0),COALESCE(SUM(status='failed'),0) FROM orp_publish_item WHERE status IN ('success','failed','aborted')" + where
+	if err := s.db.QueryRowContext(r.Context(), query, args...).Scan(&total, &success, &failed); err != nil && !errors.Is(err, sql.ErrNoRows) {
 		orpFailure(w, 500, "读取统计失败")
 		return
 	}
-	_ = s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM orp_publish_batch").Scan(&batches)
-	_ = s.db.QueryRowContext(r.Context(), "SELECT COUNT(*) FROM orp_publish_batch WHERE phase='aborted'").Scan(&abortedBatches)
+	batchQuery := "SELECT COUNT(DISTINCT batch_id) FROM orp_publish_item WHERE 1=1" + where
+	_ = s.db.QueryRowContext(r.Context(), batchQuery, args...).Scan(&batches)
+	abortedQuery := "SELECT COUNT(DISTINCT b.id) FROM orp_publish_batch b JOIN orp_publish_item i ON i.batch_id=b.id WHERE b.phase='aborted'" + strings.ReplaceAll(where, "center_id", "i.center_id")
+	_ = s.db.QueryRowContext(r.Context(), abortedQuery, args...).Scan(&abortedBatches)
 	rate := float64(0)
 	if total > 0 {
 		rate = float64(success) * 100 / float64(total)
