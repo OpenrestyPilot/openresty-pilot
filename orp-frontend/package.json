@@ -6,8 +6,8 @@
     "monorepo",
     "turbo",
     "orp",
-    "openresty plus",
-    "openresty plus frontend",
+    "orp",
+    "orp frontend",
     "vben admin",
     "vben pro",
     "vue",
@@ -116,5 +116,5 @@
     "pnpm": ">=11.0.0"
   },
   "packageManager": "pnpm@11.16.0",
-  "description": "ORP Frontend: the OpenResty Plus administration console based on Vue and Vben Admin."
+  "description": "ORP Frontend: the ORP administration console based on Vue and Vben Admin."
 }

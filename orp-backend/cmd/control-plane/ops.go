@@ -72,7 +72,7 @@ func runCLI(args []string) error {
 }
 
 func printUsage() {
-	fmt.Printf(`OpenResty Plus %s
+	fmt.Printf(`ORP %s
 
 用法：openresty-plus <命令>
 

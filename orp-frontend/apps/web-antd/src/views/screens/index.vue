@@ -82,7 +82,7 @@ onBeforeUnmount(() => {
       allow="fullscreen"
       class="h-full w-full border-0"
       :src="src"
-      title="OpenrestyPlus 实时请求大屏"
+      title="ORP 实时请求大屏"
       @load="pushLatest"
     />
   </div>

@@ -1,5 +1,5 @@
 /**
- * OpenResty Plus 资源 Mock 存储
+ * ORP 资源 Mock 存储
  *
  * 内存态种子数据 + 增删改查助手，供 backend-mock 的 /api/orp/** 路由使用。
  * 所有写操作自动生成审计记录（审计留痕规则）。

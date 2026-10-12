@@ -1,6 +1,6 @@
-# ORP Frontend — OpenResty Plus Web Console
+# ORP Frontend — ORP Web Console
 
-This independent project contains the OpenResty Plus web console in `apps/web-antd/` and the shared Vben workspace packages it uses. Its project identifier is `orp-frontend`.
+This independent project contains the ORP web console in `apps/web-antd/` and the shared Vben workspace packages it uses. Its project identifier is `orp-frontend`.
 
 ## Requirements
 
@@ -27,4 +27,4 @@ pnpm --filter @vben/web-antd build
 
 In production, configure the web server or ingress to route `/api` to the backend service. Vite's development proxy is not part of the production bundle.
 
-The root `README.md` introduces ORP Frontend and credits the upstream Vben framework. This file contains the OpenResty Plus application setup.
+The root `README.md` introduces ORP Frontend and credits the upstream Vben framework. This file contains the ORP application setup.

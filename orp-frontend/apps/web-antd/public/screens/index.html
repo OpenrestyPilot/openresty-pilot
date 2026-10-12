@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OpenrestyPlus · 实时请求大屏</title>
+  <title>ORP · 实时请求大屏</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     html, body { width: 100%; height: 100%; overflow: hidden; }
@@ -102,7 +102,7 @@
   <div class="screen">
     <div class="header">
       <div>
-        <h1 id="title">OpenrestyPlus 实时请求大屏</h1>
+        <h1 id="title">ORP 实时请求大屏</h1>
         <div class="sub" id="subtitle">REALTIME REQUEST MONITORING · 全球流量态势</div>
       </div>
       <div class="clock" id="clock">--:--:--</div>
@@ -158,7 +158,7 @@
     };
     var GEO_FILES = { world: '../maps/world.json', sichuan: '../maps/sichuan.json', chengdu: '../maps/chengdu.json' };
 
-    document.getElementById('title').textContent = 'OpenrestyPlus 实时请求大屏 · ' + TITLES[MAP_KEY][0] + '（' + MODE.toUpperCase() + '）';
+    document.getElementById('title').textContent = 'ORP 实时请求大屏 · ' + TITLES[MAP_KEY][0] + '（' + MODE.toUpperCase() + '）';
     document.getElementById('subtitle').textContent = 'REALTIME REQUEST MONITORING · ' + TITLES[MAP_KEY][0] + '流量态势';
     document.getElementById('mapTitle').textContent = TITLES[MAP_KEY][0] + ' · 实时请求态势';
 

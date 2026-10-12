@@ -69,7 +69,7 @@ test('real UI pages call Go APIs and center CRUD persists', async ({ page }) => 
   await page.goto('/centers');
   await expect(page.getByRole('heading', { name: '中心管理' })).toBeVisible();
   const code = 'codex-ui-e2e';
-  const marker = 'OpenRestyPlus UI backend smoke test data; safe to keep.';
+  const marker = 'ORP UI backend smoke test data; safe to keep.';
   const testRow = page.getByRole('row').filter({ hasText: code });
 
   if (!(await testRow.count())) {

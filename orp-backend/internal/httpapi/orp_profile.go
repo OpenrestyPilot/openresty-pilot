@@ -192,7 +192,7 @@ func (s *Server) profileOTPSetup(w http.ResponseWriter, r *http.Request) {
 		orpFailure(w, 500, "保存 OTP 密钥失败")
 		return
 	}
-	uri := "otpauth://totp/" + url.PathEscape("OpenrestyPlus:"+username) + "?secret=" + url.QueryEscape(encoded) + "&issuer=OpenrestyPlus&algorithm=SHA1&digits=6&period=30"
+	uri := "otpauth://totp/" + url.PathEscape("ORP:"+username) + "?secret=" + url.QueryEscape(encoded) + "&issuer=ORP&algorithm=SHA1&digits=6&period=30"
 	orpReply(w, 200, map[string]string{"otpSecret": encoded, "otpauthUrl": uri})
 }
 

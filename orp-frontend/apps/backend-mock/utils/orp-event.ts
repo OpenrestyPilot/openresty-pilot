@@ -1,5 +1,5 @@
 /**
- * OpenResty Plus 审计上下文（h3 事件适配层）
+ * ORP 审计上下文（h3 事件适配层）
  *
  * 从 Nitro 请求事件中提取操作人与客户端 IP。
  * 注意：orp-store 本体已纯化（不依赖 h3/jwt），

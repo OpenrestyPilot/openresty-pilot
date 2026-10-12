@@ -378,7 +378,7 @@ func (s *Server) orpAlertChannelTest(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
 	message := tlsAlertMessage{
 		EventType:  "test",
-		Title:      "OpenRestyPlus 告警通道测试",
+		Title:      "ORP 告警通道测试",
 		Message:    fmt.Sprintf("告警通道「%s」连接测试成功。", channel.Name),
 		OccurredAt: now.Format(time.RFC3339),
 	}
@@ -819,7 +819,7 @@ func postAlertMessage(ctx context.Context, channel alertChannelRecord, genericPa
 		return 0, "", errors.New("推送地址无效")
 	}
 	request.Header.Set("Content-Type", "application/json; charset=utf-8")
-	request.Header.Set("User-Agent", "OpenRestyPlus-Alert/1.0")
+	request.Header.Set("User-Agent", "ORP-Alert/1.0")
 	if channel.Type == "webhook" {
 		request.Header.Set("X-ORP-Event", message.EventType)
 		if secret != "" {
@@ -912,7 +912,7 @@ func buildFeishuAlertCard(message tlsAlertMessage) map[string]any {
 		},
 		"elements": []map[string]any{
 			{"tag": "div", "text": map[string]string{"tag": "lark_md", "content": strings.Join(content, "\n")}},
-			{"tag": "note", "elements": []map[string]string{{"tag": "plain_text", "content": "OpenRestyPlus · " + message.OccurredAt}}},
+			{"tag": "note", "elements": []map[string]string{{"tag": "plain_text", "content": "ORP · " + message.OccurredAt}}},
 		},
 	}
 }

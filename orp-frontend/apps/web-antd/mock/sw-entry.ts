@@ -1,5 +1,5 @@
 /**
- * Service Worker：OpenResty Plus 内嵌 Mock（浏览器端 /api/** 接管）
+ * Service Worker：ORP 内嵌 Mock（浏览器端 /api/** 接管）
  *
  * 沙盒预览场景下，Vben Admin 生产包（public/vben/）由 vite 静态托管，
  * 后端 API 不存在 —— 本 SW 复用 web-antd mock 的 dispatchApi 纯函数，

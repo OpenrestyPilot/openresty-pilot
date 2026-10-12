@@ -1,5 +1,5 @@
 /**
- * OpenrestyPlus OpenAPI 3.0 规范。
+ * ORP OpenAPI 3.0 规范。
  *
  * 描述 Go 控制面已注册的 /api 路由；错误约定：code=0 成功 / code=-1 失败（message 携带原因）。
  * 供接口文档页面（ApiDocsPage）浏览、搜索、下载 openapi.json 与复制 JSON，
@@ -59,7 +59,7 @@ const jsonBody = (ref: string, example: Record<string, unknown>) => ({
 export const openApiSpec = {
   openapi: '3.0.3',
   info: {
-    title: 'OpenrestyPlus 配置管理平台 API',
+    title: 'ORP 配置管理平台 API',
     description: [
       '面向多中心 OpenResty / Nginx 集群的配置与资源管理接口。',
       '',

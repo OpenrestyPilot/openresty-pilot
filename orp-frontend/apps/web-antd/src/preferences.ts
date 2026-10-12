@@ -19,10 +19,10 @@ export const overridesPreferences = defineOverridesPreferences({
   // overrides
   app: {
     defaultHomePath: '/centers',
-    name: import.meta.env.VITE_APP_TITLE,
+    name: 'ORP',
     timezone: 'America/New_York',
     watermark: true,
-    watermarkContent: 'OpenrestyPlus',
+    watermarkContent: 'ORP',
   },
   breadcrumb: {
     enable: true,

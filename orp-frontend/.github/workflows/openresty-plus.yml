@@ -1,4 +1,4 @@
-name: OpenResty Plus frontend checks
+name: ORP frontend checks
 
 on:
   push:
@@ -23,7 +23,7 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Validate OpenAPI schemas and examples
         run: pnpm check:openapi
-      - name: Typecheck OpenResty Plus console
+      - name: Typecheck ORP console
         run: pnpm --filter @vben/web-antd run typecheck
-      - name: Build OpenResty Plus console
+      - name: Build ORP console
         run: pnpm --filter @vben/web-antd run build

@@ -1,6 +1,6 @@
 # ORP 前端
 
-ORP 前端是 OpenResty Plus 的管理控制台，作为独立项目维护。项目目录和包标识均为 `orp-frontend`，基于 Vue 3、Vite、TypeScript 与 Vben Admin 构建。框架专用包保留上游包名及 MIT 许可声明。
+ORP 前端是 ORP 的管理控制台，作为独立项目维护。项目目录和包标识均为 `orp-frontend`，基于 Vue 3、Vite、TypeScript 与 Vben Admin 构建。框架专用包保留上游包名及 MIT 许可声明。
 
 安装、启动、构建所需的 Node.js/pnpm 版本和环境配置请参阅 [`PROJECT.md`](PROJECT.md)。
 
@@ -22,7 +22,7 @@ ORP 前端是 OpenResty Plus 的管理控制台，作为独立项目维护。项
 - **主题定制**：提供多种主题颜色与自定义选项。
 - **国际化**：内置多语言支持。
 - **权限管理**：支持按权限动态生成路由。
-- **管理控制台**：为 OpenResty Plus 提供前端管理界面。
+- **管理控制台**：为 ORP 提供前端管理界面。
 
 ## 本地开发
 

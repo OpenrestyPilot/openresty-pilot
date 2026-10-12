@@ -12,7 +12,7 @@ import { Page } from '@vben/common-ui';
       allow="fullscreen"
       class="h-[calc(100vh-260px)] min-h-[480px] w-full rounded-md border border-gray-200 bg-white dark:border-gray-700"
       src="swagger/index.html"
-      title="OpenrestyPlus API 文档（Swagger UI）"
+      title="ORP API 文档（Swagger UI）"
     />
   </Page>
 </template>

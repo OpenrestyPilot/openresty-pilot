@@ -1,6 +1,6 @@
 {
   "welcomeBack": "欢迎回来",
-  "pageTitle": "让 OpenResty 集群管理更简单",
+  "pageTitle": "让网关集群管理更简单",
   "pageDesc": "统一管理节点、配置与流量，掌握服务运行全貌",
   "loginSuccess": "登录成功",
   "loginSuccessDesc": "欢迎回来",

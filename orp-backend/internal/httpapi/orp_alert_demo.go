@@ -89,7 +89,7 @@ func ensureDemoAlertCertificate(ctx context.Context, database *sql.DB) (int64, e
 	expires := now.AddDate(0, 0, 10)
 	template := x509.Certificate{
 		SerialNumber:          big.NewInt(now.UnixNano()),
-		Subject:               pkix.Name{CommonName: "alerts-demo.local", Organization: []string{"OpenRestyPlus Demo"}},
+		Subject:               pkix.Name{CommonName: "alerts-demo.local", Organization: []string{"ORP Demo"}},
 		DNSNames:              []string{"alerts-demo.local"},
 		NotBefore:             now.Add(-24 * time.Hour),
 		NotAfter:              expires,

@@ -71,7 +71,7 @@ release:
     - echo "Publishing $CI_COMMIT_TAG binary and container image"
   release:
     tag_name: "$CI_COMMIT_TAG"
-    name: "OpenResty Plus $CI_COMMIT_TAG"
+    name: "ORP $CI_COMMIT_TAG"
     description: "Executable: attached as a GitLab job artifact. Container image: $CI_REGISTRY_IMAGE:$CI_COMMIT_TAG"
     assets:
       links:

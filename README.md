@@ -1,6 +1,6 @@
-# OpenResty Plus
+# ORP
 
-OpenResty Plus 是 OpenResty 集群管理平台。前端和后端源码分别位于 `orp-frontend/` 与 `orp-backend/`；构建时会把 Vue 管理界面嵌入 Go 服务，生成一个同时提供管理页面和 API 的可执行文件。此仓库负责编译单体程序和制作它的 Docker 镜像。OpenResty 节点、Filebeat 及本地演示环境由独立的 [orp-quickstart](https://github.com/OpenrestyPlus/orp-quickstart) 仓库管理。
+ORP 是面向多中心网关集群的配置管理平台。前端和后端源码分别位于 `orp-frontend/` 与 `orp-backend/`；构建时会把 Vue 管理界面嵌入 Go 服务，生成一个同时提供管理页面和 API 的可执行文件。此仓库负责编译单体程序和制作它的 Docker 镜像。OpenResty 节点、Filebeat 及本地演示环境由独立的 [orp-quickstart](https://github.com/OpenrestyPilot/orp-quickstart) 仓库管理。
 
 ## 平台截图
 
@@ -110,7 +110,7 @@ cp orp-backend/.env.example .env
 ./dist/openresty-plus version     # 查看版本
 ```
 
-`./dist/openresty-plus run` 会以前台方式运行，适合交给 systemd 或容器运行时管理。默认监听 `:8081`，PID 文件和日志写入 `runtime/`；可用 `OPENRESTY_STATE_DIR` 更改状态目录。数据库和演示环境的启动说明见 [orp-quickstart](https://github.com/OpenrestyPlus/orp-quickstart)。
+`./dist/openresty-plus run` 会以前台方式运行，适合交给 systemd 或容器运行时管理。默认监听 `:8081`，PID 文件和日志写入 `runtime/`；可用 `OPENRESTY_STATE_DIR` 更改状态目录。数据库和演示环境的启动说明见 [orp-quickstart](https://github.com/OpenrestyPilot/orp-quickstart)。
 
 ## 目录
 

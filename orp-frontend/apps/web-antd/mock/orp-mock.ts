@@ -1,5 +1,5 @@
 /**
- * OpenResty Plus 内嵌 Mock 服务（vite dev 中间件版）
+ * ORP 内嵌 Mock 服务（vite dev 中间件版）
  *
  * 在沙盒预览/免后端环境下于 vite dev server 进程内承接全部 /api/** 请求，
  * 与 backend-mock（Nitro, 端口 5320）保持接口契约一致：

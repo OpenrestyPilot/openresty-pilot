@@ -18,7 +18,7 @@ OPENRESTY_ENV_FILE=../orp-quickstart/.env ./orp-backend/scripts/seed-alert-demo.
 go run ./cmd/alert-test-sink
 ```
 
-然后登录 OpenRestyPlus，打开“告警通知”：
+然后登录 ORP，打开“告警通知”：
 
 1. 在推送通道中编辑“本地 Webhook 演示”，保存后启用。
 2. 使用“测试”确认接收器返回 HTTP 200；接收器终端会显示消息 JSON。

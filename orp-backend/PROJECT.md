@@ -1,4 +1,4 @@
-# ORP Backend — OpenResty Plus Go Control Plane
+# ORP Backend — ORP Go Control Plane
 
 Project identifier: `orp-backend`.
 

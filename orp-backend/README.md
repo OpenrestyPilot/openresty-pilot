@@ -1,6 +1,6 @@
-# ORP Backend — OpenResty Plus Control Plane
+# ORP Backend — ORP Control Plane
 
-ORP Backend 是 OpenResty Plus 的独立 Go 控制面项目，监听地址由 `OPENRESTY_HTTP_ADDR` 配置，MySQL 结构通过 `internal/store/migrations/` 中的版本化 SQL 初始化。Redis 与 Kafka 不作为控制面数据正确性的依赖。独立运行说明见 [PROJECT.md](PROJECT.md)。
+ORP Backend 是 ORP 的独立 Go 控制面项目，监听地址由 `OPENRESTY_HTTP_ADDR` 配置，MySQL 结构通过 `internal/store/migrations/` 中的版本化 SQL 初始化。Redis 与 Kafka 不作为控制面数据正确性的依赖。独立运行说明见 [PROJECT.md](PROJECT.md)。
 
 ## 当前能力
 
@@ -13,7 +13,7 @@ ORP Backend 是 OpenResty Plus 的独立 Go 控制面项目，监听地址由 `O
 - 实时日志接口提供 Bearer 鉴权 SSE；快速启动仓库中的 Filebeat 示例连接 `OPENRESTY_KAFKA_BOOTSTRAP_SERVERS`。
 - 可选独立 Agent mTLS 监听器支持已登记节点的心跳、固定 reload 任务领取与结果回报；超级管理员可绑定证书 SHA-256 指纹并为在线 Agent 创建 reload 任务。它尚未连接配置发布批次，也不替代生产发布适配器。
 
-控制面代码由本仓库提供；OpenResty、Filebeat 和中间件的本地启动配置位于独立的 [orp-quickstart](https://github.com/OpenrestyPlus/orp-quickstart) 仓库。可选的独立 Agent mTLS listener 提供已登记节点的心跳与手动固定 reload 任务，不等同于生产配置发布能力。Go 控制面功能盘点、验证证据和未闭环项见 [`docs/frontend-backend-migration-status.md`](docs/frontend-backend-migration-status.md)。
+控制面代码由本仓库提供；OpenResty、Filebeat 和中间件的本地启动配置位于独立的 [orp-quickstart](https://github.com/OpenrestyPilot/orp-quickstart) 仓库。可选的独立 Agent mTLS listener 提供已登记节点的心跳与手动固定 reload 任务，不等同于生产配置发布能力。Go 控制面功能盘点、验证证据和未闭环项见 [`docs/frontend-backend-migration-status.md`](docs/frontend-backend-migration-status.md)。
 
 ## 尚未闭环
 
@@ -26,6 +26,6 @@ ORP Backend 是 OpenResty Plus 的独立 Go 控制面项目，监听地址由 `O
 
 ## 本地开发
 
-后端单独开发方式见 [PROJECT.md](PROJECT.md)。平台文档位于 [`docs/`](docs/)。源码编译前后端单体程序和本地演示环境的说明见 [orp-quickstart](https://github.com/OpenrestyPlus/orp-quickstart)。
+后端单独开发方式见 [PROJECT.md](PROJECT.md)。平台文档位于 [`docs/`](docs/)。源码编译前后端单体程序和本地演示环境的说明见 [orp-quickstart](https://github.com/OpenrestyPilot/orp-quickstart)。
 
-![OpenResty Plus architecture](docs/openresty-architecture-polished.png)
+![ORP architecture](docs/openresty-architecture-polished.png)

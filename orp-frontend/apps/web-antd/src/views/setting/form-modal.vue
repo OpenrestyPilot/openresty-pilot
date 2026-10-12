@@ -137,7 +137,7 @@ const [Form, formApi] = useVbenForm({
     {
       component: 'Input',
       componentProps: {
-        placeholder: '按所选类型输入，例如：OpenrestyPlus / true / 30',
+        placeholder: '按所选类型输入，例如：ORP / true / 30',
       },
       fieldName: 'value',
       help: '按所选参数类型进行格式校验（JSON 非法将阻断保存）',

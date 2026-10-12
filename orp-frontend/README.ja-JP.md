@@ -16,7 +16,7 @@
 
 ## 紹介
 
-ORP FrontendはOpenResty Plus管理コンソールの独立したフロントエンドプロジェクトです。Vue 3、Vite、TypeScript、Vben Adminを使用しています。セットアップ方法は[PROJECT.md](PROJECT.md)を参照してください。
+ORP FrontendはORP管理コンソールの独立したフロントエンドプロジェクトです。Vue 3、Vite、TypeScript、Vben Adminを使用しています。セットアップ方法は[PROJECT.md](PROJECT.md)を参照してください。
 
 ## アップグレード通知
 

@@ -1,4 +1,4 @@
-# OpenResty Plus 领域词汇
+# ORP 领域词汇
 
 ## 领域边界
 

@@ -1,4 +1,4 @@
-/** OpenrestyPlus 资源类型定义（与 backend-mock / Go 控制面契约对齐） */
+/** ORP 资源类型定义（与 backend-mock / Go 控制面契约对齐） */
 
 /** 中心（Center） */
 export interface Center {

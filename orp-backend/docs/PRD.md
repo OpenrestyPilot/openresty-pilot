@@ -1,4 +1,4 @@
-# OpenResty Plus 配置管理平台 PRD
+# ORP 配置管理平台 PRD
 
 ## Problem Statement
 

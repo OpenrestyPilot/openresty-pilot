@@ -1,4 +1,4 @@
-# OpenRestyPlus 后端 UI 验收
+# ORP 后端 UI 验收
 
 该验收通过浏览器真实访问当前运行的 Vite 页面，再由页面请求 Go 控制面；不会调用 OpenResty 发布、回滚或节点启停。
 
@@ -19,7 +19,7 @@ Playwright 会打开单独的 Chromium 窗口。登录页出现时，请手动�
 
 - 标识码：`codex-ui-e2e`
 - 名称：`自动化验收测试中心`
-- 备注：`OpenRestyPlus UI backend smoke test data; safe to keep.`
+- 备注：`ORP UI backend smoke test data; safe to keep.`
 
 如果该标识码已存在但备注不同，测试会停止，不会覆盖现有记录。重新运行时会确认这条测试数据仍可从 Go 后端读取。
 
