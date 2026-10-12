@@ -163,6 +163,10 @@ function fmtNum(n: number | undefined): string {
   return String(n);
 }
 
+function fmtQps(n: number | undefined): string {
+  return n === undefined ? '-' : String(Number(n.toFixed(2)));
+}
+
 function fmtMbps(n: number | undefined): string {
   return n === undefined ? '-' : `${(n / 1000).toFixed(2)} Gbps`;
 }
@@ -179,7 +183,7 @@ const cards = computed<Array<{ color: string; icon: string; label: string; toolt
   const s = metrics.value?.summary;
   return [
     { label: '请求总量', value: fmtNum(s?.totalRequests), icon: '🔥', color: '#1668dc' },
-    { label: 'QPS 峰值 / 均值', value: `${s?.qpsPeak ?? '-'} / ${s?.qpsAvg ?? '-'}`, icon: '⚡', color: '#13c2c2' },
+    { label: 'QPS 峰值 / 均值', value: `${fmtQps(s?.qpsPeak)} / ${fmtQps(s?.qpsAvg)}`, icon: '⚡', color: '#13c2c2' },
     { label: '流入 / 流出带宽', value: `${fmtMbps(s?.bandwidthInMbps)} / ${fmtMbps(s?.bandwidthOutMbps)}`, icon: '🌐', color: '#2f54eb' },
     { label: '活跃连接数', value: fmtNum(s?.activeConns), icon: '🔗', color: '#722ed1' },
     { label: '错误率（4xx+5xx）', value: `${s?.errorRate ?? '-'}%`, icon: '⚠️', color: '#d4380d' },
