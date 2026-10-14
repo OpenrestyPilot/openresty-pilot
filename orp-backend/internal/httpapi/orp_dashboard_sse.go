@@ -18,7 +18,8 @@ import (
 )
 
 const (
-	dashboardPushInterval      = 10 * time.Second
+	// Dashboard snapshots are refreshed and pushed once per second for live views.
+	dashboardPushInterval      = time.Second
 	dashboardSnapshotTTL       = 30 * time.Second
 	dashboardRefreshQueue      = "openresty-plus:dashboard:refresh"
 	dashboardSnapshotCacheBase = "openresty-plus:dashboard:snapshot:"
@@ -113,11 +114,8 @@ func (s *Server) orpDashboardEvents(w http.ResponseWriter, r *http.Request) {
 	if s.redis != nil {
 		pubsub = s.redis.Subscribe(r.Context(), dashboardSnapshotKey(query, user)+":updates")
 		defer pubsub.Close()
-		if _, err := pubsub.Receive(r.Context()); err != nil {
-			writeDashboardStreamError(w, err)
-			flusher.Flush()
-			return
-		}
+		// Channel establishes the Redis reader in the background. The periodic
+		// cache read below covers updates published before the subscription is ready.
 		updates = pubsub.Channel()
 		snapshot, found, err := s.cachedDashboardSnapshot(r.Context(), query, user)
 		if err != nil {
@@ -158,6 +156,8 @@ func (s *Server) orpDashboardEvents(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			if s.redis != nil {
+				// Refresh is deduplicated in Redis; clients still receive the latest
+				// available snapshot at one-second intervals while a refresh runs.
 				s.enqueueDashboardRefresh(r.Context(), query, user)
 				snapshot, found, err := s.cachedDashboardSnapshot(r.Context(), query, user)
 				if err != nil {
@@ -294,7 +294,7 @@ func (s *Server) enqueueDashboardRefresh(ctx context.Context, query, user string
 	body, _ := json.Marshal(job)
 	queueCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
-	created, err := s.redis.SetNX(queueCtx, key+":queued", "1", dashboardPushInterval).Result()
+	created, err := s.redis.SetNX(queueCtx, key+":queued", "1", dashboardSnapshotTTL).Result()
 	if err == nil && created {
 		_ = s.redis.RPush(queueCtx, dashboardRefreshQueue, body).Err()
 	}
