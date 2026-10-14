@@ -39,6 +39,7 @@ func NewMuxWithRedis(database *sql.DB, redisClient *redis.Client) *http.ServeMux
 	mux.HandleFunc("POST /api/orp/nodes/{id}/agent/reload", server.agentReloadTaskCreate)
 	mux.HandleFunc("GET /api/orp/nodes/{id}/agent/tasks", server.agentTasksList)
 	mux.HandleFunc("PUT /api/orp/nodes/{id}/agent/certificate", server.agentCertificateRegister)
+	mux.HandleFunc("POST /api/orp/nodes/{id}/agent/bootstrap", server.agentBootstrapCreate)
 	mux.HandleFunc("POST /api/agent/v1/heartbeat", server.agentHeartbeat)
 	mux.HandleFunc("GET /api/agent/v1/tasks/next", server.agentNextTask)
 	mux.HandleFunc("POST /api/agent/v1/tasks/{taskId}/result", server.agentTaskResult)
@@ -198,8 +199,9 @@ func NewMuxWithRedis(database *sql.DB, redisClient *redis.Client) *http.ServeMux
 	return mux
 }
 
-// NewAgentMux exposes only the mTLS-protected node protocol on its dedicated
-// listener, keeping browser and user APIs on the regular control-plane port.
+// NewAgentMux exposes only the node protocol on its dedicated HTTPS listener,
+// keeping browser and user APIs on the regular control-plane port. Nodes may
+// authenticate with a registered mTLS certificate or a rotated Agent token.
 func NewAgentMux(database *sql.DB) *http.ServeMux {
 	mux := http.NewServeMux()
 	server := &Server{db: database}

@@ -1,12 +1,16 @@
 package httpapi
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -30,12 +34,6 @@ type agentTaskResult struct {
 }
 
 func (s *Server) authenticatedAgentNode(r *http.Request, presented string) (int64, string, error) {
-	if r.TLS == nil || len(r.TLS.PeerCertificates) == 0 {
-		return 0, "", errors.New("需要节点客户端证书")
-	}
-	cert := r.TLS.PeerCertificates[0]
-	sum := sha256.Sum256(cert.Raw)
-	fingerprint := strings.ToLower(hex.EncodeToString(sum[:]))
 	var id int64
 	var raw []byte
 	if err := s.db.QueryRowContext(r.Context(), "SELECT id,document FROM orp_resource WHERE kind='nodes' AND JSON_UNQUOTE(JSON_EXTRACT(document,'$.agentId'))=?", presented).Scan(&id, &raw); err != nil {
@@ -45,12 +43,115 @@ func (s *Server) authenticatedAgentNode(r *http.Request, presented string) (int6
 	if err := json.Unmarshal(raw, &node); err != nil {
 		return 0, "", errors.New("节点登记数据无效")
 	}
-	registered := strings.ToLower(toString(node["agentCertificateFingerprint"]))
-	if !validateAgentFingerprint(registered) || registered != fingerprint {
-		return 0, "", errors.New("节点客户端证书未登记或已撤销")
+	if r.TLS != nil && len(r.TLS.PeerCertificates) > 0 {
+		cert := r.TLS.PeerCertificates[0]
+		sum := sha256.Sum256(cert.Raw)
+		fingerprint := strings.ToLower(hex.EncodeToString(sum[:]))
+		registered := strings.ToLower(toString(node["agentCertificateFingerprint"]))
+		if validateAgentFingerprint(registered) && registered == fingerprint {
+			return id, fingerprint, nil
+		}
 	}
-	return id, fingerprint, nil
+	if r.TLS == nil {
+		return 0, "", errors.New("Agent 请求必须通过 HTTPS 发送")
+	}
+	token := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	if token == "" {
+		return 0, "", errors.New("需要已登记的节点客户端证书或 Agent Token")
+	}
+	digest := sha256.Sum256([]byte(token))
+	var stored string
+	if err := s.db.QueryRowContext(r.Context(), "SELECT token_hash FROM orp_agent_token WHERE node_id=?", id).Scan(&stored); err != nil || !strings.EqualFold(stored, hex.EncodeToString(digest[:])) {
+		return 0, "", errors.New("Agent Token 无效或已撤销")
+	}
+	return id, hex.EncodeToString(digest[:]), nil
 }
+
+// agentBootstrapCreate rotates the node's long-lived Agent credential. The raw
+// token is returned only in this response; storage and authentication use its SHA-256 digest.
+func (s *Server) agentBootstrapCreate(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.orpIdentity(w, r)
+	if !ok {
+		return
+	}
+	nodeID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+	if err != nil || nodeID < 1 {
+		orpFailure(w, 400, "节点 ID 无效")
+		return
+	}
+	var raw []byte
+	if err := s.db.QueryRowContext(r.Context(), "SELECT document FROM orp_resource WHERE kind='nodes' AND id=?", nodeID).Scan(&raw); err != nil {
+		orpFailure(w, 404, "节点不存在")
+		return
+	}
+	var node orpDocument
+	if err := json.Unmarshal(raw, &node); err != nil {
+		orpFailure(w, 500, "读取节点失败")
+		return
+	}
+	roles, roleErr := s.accountRoles(r, actor)
+	if roleErr != nil || !accountHasCenterPermission(roles, "orp:node:operate", centerIDString(node["centerId"])) {
+		orpFailure(w, 403, "当前角色无权操作该节点")
+		return
+	}
+	controlURL := strings.TrimSpace(os.Getenv("ORP_AGENT_PUBLIC_URL"))
+	if controlURL == "" {
+		orpFailure(w, 409, "请先配置节点可访问的 ORP_AGENT_PUBLIC_URL")
+		return
+	}
+	parsedURL, parseErr := url.Parse(controlURL)
+	if parseErr != nil || parsedURL.Scheme != "https" || parsedURL.Host == "" || parsedURL.User != nil || parsedURL.RawQuery != "" || parsedURL.Fragment != "" {
+		orpFailure(w, 500, "ORP_AGENT_PUBLIC_URL 必须是有效的 HTTPS 地址")
+		return
+	}
+	credential := make([]byte, 32)
+	if _, err := rand.Read(credential); err != nil {
+		orpFailure(w, 500, "生成 Agent Token 失败")
+		return
+	}
+	token := base64.RawURLEncoding.EncodeToString(credential)
+	digest := sha256.Sum256([]byte(token))
+	tx, err := s.db.BeginTx(r.Context(), nil)
+	if err != nil {
+		orpFailure(w, 500, "签发 Agent Token 失败")
+		return
+	}
+	defer tx.Rollback()
+	if toString(node["agentId"]) == "" {
+		node["agentId"] = "node-" + strconv.FormatInt(nodeID, 10)
+	}
+	delete(node, "agentCertificateFingerprint")
+	updated, _ := json.Marshal(node)
+	if _, err := tx.ExecContext(r.Context(), "UPDATE orp_resource SET document=?,updated_at=NOW(6) WHERE kind='nodes' AND id=?", updated, nodeID); err != nil {
+		orpFailure(w, 500, "保存 Agent 节点身份失败")
+		return
+	}
+	if _, err := tx.ExecContext(r.Context(), `INSERT INTO orp_agent_token(node_id,token_hash,created_at) VALUES(?,?,NOW(6)) ON DUPLICATE KEY UPDATE token_hash=VALUES(token_hash),created_at=VALUES(created_at)`, nodeID, hex.EncodeToString(digest[:])); err != nil {
+		orpFailure(w, 500, "保存 Agent Token 失败")
+		return
+	}
+	audit, _ := json.Marshal(map[string]string{"agentId": toString(node["agentId"]), "credential": "rotated"})
+	if err := orpAudit(r.Context(), tx, actor, "agent_token_rotate", "nodes", nodeID, nil, audit, orpClientIP(r)); err != nil {
+		orpFailure(w, 500, "记录 Agent Token 审计失败")
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		orpFailure(w, 500, "提交 Agent Token 失败")
+		return
+	}
+	base := strings.TrimRight(controlURL, "/")
+	packageURL := "https://gitlab.com/OpenrestyPilot/orp-node-agent/-/releases/permalink/latest/downloads/orp-node-agent-linux-amd64.tar.gz"
+	nodeAgentID := toString(node["agentId"])
+	configJSON, _ := json.Marshal(map[string]string{"nodeId": nodeAgentID, "controlPlaneUrl": base, "agentToken": token, "serverCAFile": "/etc/ssl/certs/ca-certificates.crt", "nginxBinary": "/usr/local/openresty/nginx/sbin/nginx", "nginxConfig": "/usr/local/openresty/nginx/conf/nginx.conf", "reloadHelper": "/usr/local/sbin/orp-openresty-reload", "stateDir": "/var/lib/orp-node-agent", "pidFile": "/usr/local/openresty/nginx/logs/nginx.pid"})
+	dockerConfig, _ := json.Marshal(map[string]string{"nodeId": nodeAgentID, "controlPlaneUrl": base, "agentToken": token, "serverCAFile": "/etc/ssl/cert.pem", "nginxBinary": "/usr/local/openresty/nginx/sbin/nginx", "nginxConfig": "/usr/local/openresty/nginx/conf/nginx.conf", "stateDir": "/var/lib/orp-node-agent", "pidFile": "/usr/local/openresty/nginx/logs/nginx.pid"})
+	archive := "curl -fsSL " + shellQuote(packageURL) + " -o /tmp/orp-node-agent.tgz || exit 1;"
+	install := archive + " sudo tar -xzf /tmp/orp-node-agent.tgz -C /tmp && sudo install -m 0755 /tmp/orp-node-agent /usr/local/bin/orp-node-agent && sudo install -m 0755 /tmp/deploy/systemd/orp-openresty-reload /usr/local/sbin/orp-openresty-reload && sudo install -m 0440 /tmp/deploy/systemd/orp-node-agent.sudoers /etc/sudoers.d/orp-node-agent && sudo install -m 0644 /tmp/deploy/systemd/orp-node-agent.service /etc/systemd/system/orp-node-agent.service && (id -u orp-agent >/dev/null 2>&1 || sudo useradd --system --home-dir /var/lib/orp-node-agent --shell /usr/sbin/nologin orp-agent) && sudo install -d -o root -g orp-agent -m 0750 /etc/orp-node-agent && printf %s " + shellQuote(string(configJSON)) + " | sudo tee /etc/orp-node-agent/config.json >/dev/null && sudo chown root:orp-agent /etc/orp-node-agent/config.json && sudo chmod 0640 /etc/orp-node-agent/config.json && sudo systemctl daemon-reload && sudo systemctl enable --now orp-node-agent"
+	wget := strings.Replace(install, "curl -fsSL "+shellQuote(packageURL)+" -o /tmp/orp-node-agent.tgz || exit 1;", "wget -qO /tmp/orp-node-agent.tgz "+shellQuote(packageURL)+" || exit 1;", 1)
+	docker := "docker run -d --name openresty-pilot-" + strconv.FormatInt(nodeID, 10) + " --restart unless-stopped -p 80:80 --entrypoint /bin/sh openresty/openresty:alpine -c " + shellQuote("apk add --no-cache ca-certificates wget tar >/dev/null && wget -qO /tmp/orp-node-agent.tgz "+shellQuote(packageURL)+" && tar -xzf /tmp/orp-node-agent.tgz -C /tmp && install -m 0755 /tmp/orp-node-agent /usr/local/bin/orp-node-agent && mkdir -p /etc/orp-node-agent /var/lib/orp-node-agent && umask 077 && printf %s "+shellQuote(string(dockerConfig))+" > /etc/orp-node-agent/config.json && ( /usr/local/bin/orp-node-agent -config /etc/orp-node-agent/config.json & ) && exec /usr/local/openresty/bin/openresty -g 'daemon off;'")
+	orpReply(w, 200, map[string]any{"nodeId": nodeID, "agentId": node["agentId"], "token": token, "controlPlaneUrl": base, "commands": map[string]string{"curl": install, "wget": wget, "docker": docker}})
+}
+
+func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'" }
 
 func writeAgentError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]string{"error": err.Error()})
@@ -214,11 +315,22 @@ func (s *Server) agentReloadTaskCreate(w http.ResponseWriter, r *http.Request) {
 		orpFailure(w, 500, "读取节点失败")
 		return
 	}
+	roles, roleErr := s.accountRoles(r, actor)
+	if roleErr != nil || !accountHasCenterPermission(roles, "orp:node:operate", centerIDString(node["centerId"])) {
+		orpFailure(w, http.StatusForbidden, "当前角色无权操作该节点")
+		return
+	}
 	agentID := toString(node["agentId"])
 	fingerprint := strings.ToLower(toString(node["agentCertificateFingerprint"]))
-	if _, err := hex.DecodeString(fingerprint); err != nil || len(fingerprint) != 64 || agentID == "" {
-		orpFailure(w, 409, "节点尚未登记 Agent 身份和证书指纹")
+	if agentID == "" {
+		orpFailure(w, 409, "节点尚未登记 Agent 身份")
 		return
+	}
+	if !validateAgentFingerprint(fingerprint) {
+		if err := s.db.QueryRowContext(r.Context(), "SELECT token_hash FROM orp_agent_token WHERE node_id=?", nodeID).Scan(&fingerprint); err != nil {
+			orpFailure(w, 409, "节点尚未登记 Agent 凭据")
+			return
+		}
 	}
 	var heartbeat time.Time
 	if err := s.db.QueryRowContext(r.Context(), "SELECT received_at FROM orp_agent_heartbeat WHERE node_id=? AND certificate_fingerprint=?", nodeID, fingerprint).Scan(&heartbeat); err != nil || time.Since(heartbeat) > 2*time.Minute {

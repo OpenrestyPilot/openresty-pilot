@@ -33,13 +33,13 @@ func Migrate(database *sql.DB) error {
 	defer connection.Close()
 
 	var lockResult sql.NullInt64
-	if err := connection.QueryRowContext(ctx, "SELECT GET_LOCK('openresty-plus-schema-migrations', 30)").Scan(&lockResult); err != nil {
+	if err := connection.QueryRowContext(ctx, "SELECT GET_LOCK('orp-schema-migrations', 30)").Scan(&lockResult); err != nil {
 		return fmt.Errorf("acquire schema migration lock: %w", err)
 	}
 	if !lockResult.Valid || lockResult.Int64 != 1 {
 		return fmt.Errorf("could not acquire schema migration lock")
 	}
-	defer connection.ExecContext(ctx, "SELECT RELEASE_LOCK('openresty-plus-schema-migrations')")
+	defer connection.ExecContext(ctx, "SELECT RELEASE_LOCK('orp-schema-migrations')")
 
 	if _, err := connection.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS openresty_schema_migration (
 		version VARCHAR(50) NOT NULL PRIMARY KEY,
@@ -156,7 +156,7 @@ func validateSchema(ctx context.Context, connection *sql.Conn) error {
 		"control_api_reload_task", "control_api_reload_node_result", "configuration_dictionary",
 		"http_upstream_target", "tls_certificate", "dns_resolver_configuration", "http_configuration",
 		"orp_alert_channel", "orp_tls_alert_rule", "orp_tls_alert_rule_channel", "orp_alert_delivery",
-		"orp_agent_heartbeat", "orp_agent_task",
+		"orp_agent_heartbeat", "orp_agent_task", "orp_agent_token",
 	} {
 		var exists bool
 		if err := connection.QueryRowContext(ctx, `SELECT EXISTS(

@@ -26,7 +26,7 @@ var (
 
 func main() {
 	if err := runCLI(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "openresty-plus:", err)
+		fmt.Fprintln(os.Stderr, "orp:", err)
 		os.Exit(1)
 	}
 }
@@ -101,20 +101,20 @@ func runServer() error {
 			Addr: configuration.AgentHTTPSAddress, Handler: httpapi.NewAgentMux(database),
 			ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second,
 			WriteTimeout: 10 * time.Second, IdleTimeout: 60 * time.Second,
-			TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: clientCAs},
+			TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, ClientAuth: tls.VerifyClientCertIfGiven, ClientCAs: clientCAs},
 		}
 	}
 
 	serverErrors := make(chan error, 2)
 	go func() {
-		log.Printf("openresty-plus listening on %s", configuration.HTTPAddress)
+		log.Printf("orp listening on %s", configuration.HTTPAddress)
 		if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serverErrors <- fmt.Errorf("HTTP listener: %w", err)
 		}
 	}()
 	if agentServer != nil {
 		go func() {
-			log.Printf("openresty-plus Agent mTLS listener on %s", configuration.AgentHTTPSAddress)
+			log.Printf("orp Agent mTLS listener on %s", configuration.AgentHTTPSAddress)
 			if err := agentServer.ListenAndServeTLS(configuration.TLSCertFile, configuration.TLSKeyFile); err != nil && !errors.Is(err, http.ErrServerClosed) {
 				serverErrors <- fmt.Errorf("Agent HTTPS listener: %w", err)
 			}

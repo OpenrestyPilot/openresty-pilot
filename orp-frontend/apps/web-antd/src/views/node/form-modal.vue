@@ -13,7 +13,7 @@ import { useDirtyGuard } from '#/composables/use-dirty-guard';
 
 defineOptions({ name: 'NodeFormModal' });
 
-const emit = defineEmits<{ success: [] }>();
+const emit = defineEmits<{ success: [record?: NodeItem] }>();
 
 const isEdit = ref(false);
 const editId = ref(0);
@@ -276,16 +276,17 @@ async function onSubmit(values: Record<string, any>) {
       status: values.status,
       weight: Number(values.weight ?? 10),
     };
+    let savedNode: NodeItem | undefined;
     if (isEdit.value) {
       await updateNodeApi(editId.value, payload);
       message.success('节点信息已更新');
     } else {
-      await createNodeApi(payload);
+      savedNode = await createNodeApi(payload);
       message.success('节点注册成功');
     }
     resetDirty();
     modalApi.close();
-    emit('success');
+    emit('success', savedNode);
   } catch {
     // 错误提示由请求拦截器统一处理
   } finally {

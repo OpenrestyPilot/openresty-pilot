@@ -35,6 +35,19 @@ export function createNodeApi(data: NodePayload): Promise<NodeItem> {
   return requestClient.post('/orp/nodes', data);
 }
 
+export interface AgentBootstrapResponse {
+  agentId: string;
+  commands: { curl: string; docker: string; wget: string };
+  controlPlaneUrl: string;
+  nodeId: number;
+  token: string;
+}
+
+/** Rotate a node Agent token and return one-time copyable install commands. */
+export function bootstrapNodeAgentApi(id: number): Promise<AgentBootstrapResponse> {
+  return requestClient.post(`/orp/nodes/${id}/agent/bootstrap`, {});
+}
+
 export function updateNodeApi(
   id: number,
   data: NodePayload,
