@@ -1,6 +1,6 @@
 import type { RouteRecordRaw } from 'vue-router';
 
-/** 大屏展示：6 个地理可视化大屏（iframe 内嵌 public/screens/index.html） */
+/** 大屏展示：跳转到匿名独立项目 orp-screen */
 const routes: RouteRecordRaw[] = [
   {
     path: '/screens',
