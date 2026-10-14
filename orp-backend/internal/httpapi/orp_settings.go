@@ -18,7 +18,7 @@ var singletonNames = map[string]bool{
 }
 
 func (s *Server) orpSingletonGet(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	if _, ok := s.requirePermission(w, r, "orp:read"); !ok {
 		return
 	}
 	name := r.PathValue("name")
@@ -132,7 +132,7 @@ func (s *Server) orpSingletonPut(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) orpSettingGroupNames(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	if _, ok := s.requirePermission(w, r, "orp:read"); !ok {
 		return
 	}
 	groups, err := s.orpLoad(r.Context(), "setting-groups")
@@ -154,7 +154,7 @@ func (s *Server) orpSettingGroupNames(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) orpSettingStatus(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.orpIdentity(w, r)
+	actor, ok := s.requirePermission(w, r, "orp:config:write")
 	if !ok {
 		return
 	}
@@ -214,7 +214,7 @@ func (s *Server) orpSettingStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) orpSettingGroupReorder(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	if _, ok := s.requirePermission(w, r, "orp:config:write"); !ok {
 		return
 	}
 	body, ok := orpBody(w, r)

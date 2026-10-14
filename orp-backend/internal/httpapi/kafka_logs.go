@@ -19,8 +19,8 @@ import (
 )
 
 const (
-	defaultKafkaTopic       = "dtl-602-openresty-plus"
-	defaultKafkaConsumerID  = "openresty-plus-control-plane-v1"
+	defaultKafkaTopic       = "orp-access-logs"
+	defaultKafkaConsumerID  = "orp-control-plane-v1"
 	maxKafkaLogMessageBytes = 1 << 20
 )
 
@@ -34,12 +34,12 @@ type KafkaLogConfig struct {
 
 type filebeatLogEvent struct {
 	Message   json.RawMessage `json:"message"`
-	LogType   string          `json:"openresty_log_type"`
+	LogType   string          `json:"orp_log_type"`
 	Timestamp string          `json:"@timestamp"`
-	Openresty struct {
+	ORP struct {
 		NodeName string `json:"node_name"`
 		NodeID   any    `json:"node_id"`
-	} `json:"openresty"`
+	} `json:"orp"`
 	Log struct {
 		File struct {
 			Path string `json:"path"`
@@ -66,16 +66,16 @@ type KafkaLogRecord struct {
 
 func KafkaLogConfigFromEnv() KafkaLogConfig {
 	brokers := []string{}
-	for _, broker := range strings.Split(os.Getenv("OPENRESTY_KAFKA_BOOTSTRAP_SERVERS"), ",") {
+	for _, broker := range strings.Split(os.Getenv("ORP_KAFKA_BOOTSTRAP_SERVERS"), ",") {
 		if broker = strings.TrimSpace(broker); broker != "" {
 			brokers = append(brokers, broker)
 		}
 	}
-	topic := strings.TrimSpace(os.Getenv("OPENRESTY_KAFKA_TOPIC"))
+	topic := strings.TrimSpace(os.Getenv("ORP_KAFKA_TOPIC"))
 	if topic == "" {
 		topic = defaultKafkaTopic
 	}
-	groupID := strings.TrimSpace(os.Getenv("OPENRESTY_KAFKA_CONSUMER_GROUP"))
+	groupID := strings.TrimSpace(os.Getenv("ORP_KAFKA_CONSUMER_GROUP"))
 	if groupID == "" {
 		groupID = defaultKafkaConsumerID
 	}
@@ -84,7 +84,7 @@ func KafkaLogConfigFromEnv() KafkaLogConfig {
 
 func StartKafkaLogConsumer(ctx context.Context, db *sql.DB, config KafkaLogConfig) {
 	if len(config.Brokers) == 0 {
-		log.Printf("Kafka log consumer disabled: OPENRESTY_KAFKA_BOOTSTRAP_SERVERS is empty")
+		log.Printf("Kafka log consumer disabled: ORP_KAFKA_BOOTSTRAP_SERVERS is empty")
 		return
 	}
 	if config.Topic == "" || config.GroupID == "" {
@@ -161,7 +161,7 @@ func persistKafkaLog(ctx context.Context, db *sql.DB, kafkaMessage kafka.Message
 	if err := json.Unmarshal(kafkaMessage.Value, &envelope); err != nil {
 		return nil // Commit and skip malformed Filebeat envelopes to avoid blocking the partition.
 	}
-	nodeName := strings.TrimSpace(envelope.Openresty.NodeName)
+	nodeName := strings.TrimSpace(envelope.ORP.NodeName)
 	logType := strings.ToLower(strings.TrimSpace(envelope.LogType))
 	if nodeName == "" || (logType != "access" && logType != "error") {
 		return nil
@@ -190,7 +190,7 @@ func persistKafkaLog(ctx context.Context, db *sql.DB, kafkaMessage kafka.Message
 		}
 	}
 	var nodeID int64
-	if id, ok := numericFloat(envelope.Openresty.NodeID); ok && id > 0 {
+	if id, ok := numericFloat(envelope.ORP.NodeID); ok && id > 0 {
 		nodeID = int64(id)
 	} else {
 		nodeID = nodeIDs[nodeName]

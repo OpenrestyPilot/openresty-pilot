@@ -22,7 +22,7 @@ func (s *Server) settingGroupExists(r *http.Request, name string) (bool, error) 
 }
 
 func (s *Server) orpSettingBatchMove(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.orpIdentity(w, r)
+	actor, ok := s.requirePermission(w, r, "orp:config:write")
 	if !ok {
 		return
 	}
@@ -87,7 +87,7 @@ func (s *Server) orpSettingBatchMove(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) orpSettingGroupDelete(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.orpIdentity(w, r)
+	actor, ok := s.requirePermission(w, r, "orp:config:write")
 	if !ok {
 		return
 	}

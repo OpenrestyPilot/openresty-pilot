@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"net.daoke/orp-backend/internal/config"
 	"net/http"
 	"net/url"
 	"strings"
@@ -15,8 +16,9 @@ import (
 // New builds the control-plane HTTP surface. Store-backed API modules are
 // registered here as they are migrated from the Java control plane.
 type Server struct {
-	db    *sql.DB
-	redis *redis.Client
+	db              *sql.DB
+	redis           *redis.Client
+	runtimeSettings config.RuntimeSettings
 }
 
 func New(database *sql.DB) http.Handler {
@@ -27,6 +29,10 @@ func NewWithRedis(database *sql.DB, redisClient *redis.Client) http.Handler {
 	return localCORS(NewMuxWithRedis(database, redisClient))
 }
 
+func NewWithRuntimeSettings(database *sql.DB, redisClient *redis.Client, runtimeSettings config.RuntimeSettings) http.Handler {
+	return localCORS(newMuxWithRuntimeSettings(database, redisClient, runtimeSettings))
+}
+
 // NewMux exposes route registration for contract checks without invoking handlers.
 func NewMux(database *sql.DB) *http.ServeMux {
 	return NewMuxWithRedis(database, nil)
@@ -34,8 +40,12 @@ func NewMux(database *sql.DB) *http.ServeMux {
 
 // NewMuxWithRedis installs Redis-backed dashboard snapshot caching and refresh queueing.
 func NewMuxWithRedis(database *sql.DB, redisClient *redis.Client) *http.ServeMux {
+	return newMuxWithRuntimeSettings(database, redisClient, nil)
+}
+
+func newMuxWithRuntimeSettings(database *sql.DB, redisClient *redis.Client, runtimeSettings config.RuntimeSettings) *http.ServeMux {
 	mux := http.NewServeMux()
-	server := &Server{db: database, redis: redisClient}
+	server := &Server{db: database, redis: redisClient, runtimeSettings: runtimeSettings}
 	mux.HandleFunc("POST /api/orp/nodes/{id}/agent/reload", server.agentReloadTaskCreate)
 	mux.HandleFunc("GET /api/orp/nodes/{id}/agent/tasks", server.agentTasksList)
 	mux.HandleFunc("PUT /api/orp/nodes/{id}/agent/certificate", server.agentCertificateRegister)
@@ -47,6 +57,7 @@ func NewMuxWithRedis(database *sql.DB, redisClient *redis.Client) *http.ServeMux
 		StartDashboardSnapshotWorker(context.Background(), database, redisClient)
 	}
 	mux.HandleFunc("GET /healthz", healthz)
+	mux.HandleFunc("GET /api/auth/config", server.loginConfig)
 	mux.HandleFunc("POST /api/auth/login", server.login)
 	mux.HandleFunc("POST /api/auth/refresh", server.refreshToken)
 	mux.HandleFunc("POST /api/auth/logout", server.logout)
@@ -123,6 +134,7 @@ func NewMuxWithRedis(database *sql.DB, redisClient *redis.Client) *http.ServeMux
 	mux.HandleFunc("GET /api/orp/dashboard/events", server.orpDashboardEvents)
 	mux.HandleFunc("GET /api/orp/dashboard/trends", server.orpDashboardTrends)
 	mux.HandleFunc("GET /api/orp/dashboard/top-rankings", server.orpDashboardTopRankings)
+	mux.HandleFunc("GET /api/public/screens/events", server.orpPublicScreenEvents)
 	mux.HandleFunc("POST /api/orp/publish/rollback", server.orpPublishRollback)
 	mux.HandleFunc("POST /api/orp/publish/batches/{id}/abort", server.orpPublishAbort)
 	mux.HandleFunc("POST /api/orp/publish/batches/{id}/advance", server.orpPublishAdvance)

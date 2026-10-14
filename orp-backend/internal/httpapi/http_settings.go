@@ -10,8 +10,8 @@ import (
 	"github.com/google/uuid"
 )
 
-const defaultHTTPLogFormat = `openresty_plus '$remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent'`
-const defaultStreamLogFormat = `openresty_plus_stream '$remote_addr [$time_local] $protocol $status $bytes_sent $bytes_received $session_time'`
+const defaultHTTPLogFormat = `orp '$remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent'`
+const defaultStreamLogFormat = `orp_stream '$remote_addr [$time_local] $protocol $status $bytes_sent $bytes_received $session_time'`
 
 type httpSettings struct {
 	RootPath                  *string           `json:"rootPath"`
@@ -60,8 +60,8 @@ func (server *Server) putHTTPSettings(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "invalid HTTP settings")
 		return
 	}
-	value.HTTPLogFormat = normalizeLogFormat(value.HTTPLogFormat, "openresty_plus", defaultHTTPLogFormat)
-	value.StreamLogFormat = normalizeLogFormat(value.StreamLogFormat, "openresty_plus_stream", defaultStreamLogFormat)
+	value.HTTPLogFormat = normalizeLogFormat(value.HTTPLogFormat, "orp", defaultHTTPLogFormat)
+	value.StreamLogFormat = normalizeLogFormat(value.StreamLogFormat, "orp_stream", defaultStreamLogFormat)
 	headers, _ := json.Marshal(value.ResponseHeaders)
 	pages, _ := json.Marshal(value.DefaultPages)
 	errors, _ := json.Marshal(value.ErrorPages)
@@ -80,8 +80,8 @@ func (server *Server) loadHTTPSettings(center uuid.UUID) (httpSettings, error) {
 	err := server.db.QueryRow(`SELECT root_path,hide_version,response_headers,sendfile_enabled,tcp_nopush_enabled,tcp_nodelay_enabled,keepalive_timeout_seconds,client_max_body_size,client_header_buffer_size,large_client_header_buffers,server_names_hash_bucket_size,gzip_enabled,gzip_min_length,gzip_comp_level,http_log_format,stream_log_format,default_pages,default_page_key,error_pages FROM http_configuration WHERE center_id=?`, center[:]).Scan(&value.RootPath, &value.HideVersion, &headers, &value.SendfileEnabled, &value.TCPNopushEnabled, &value.TCPNodelayEnabled, &value.KeepaliveTimeoutSeconds, &value.ClientMaxBodySize, &value.ClientHeaderBufferSize, &value.LargeClientHeaderBuffers, &value.ServerNamesHashBucketSize, &value.GzipEnabled, &value.GzipMinLength, &value.GzipCompLevel, &value.HTTPLogFormat, &value.StreamLogFormat, &pages, &defaultPageKey, &errors)
 	if err != nil {
 		if err == sql.ErrNoRows {
-			value.HTTPLogFormat = logFormatBody(value.HTTPLogFormat, "openresty_plus")
-			value.StreamLogFormat = logFormatBody(value.StreamLogFormat, "openresty_plus_stream")
+			value.HTTPLogFormat = logFormatBody(value.HTTPLogFormat, "orp")
+			value.StreamLogFormat = logFormatBody(value.StreamLogFormat, "orp_stream")
 			return value, nil
 		}
 		return value, err
@@ -98,8 +98,8 @@ func (server *Server) loadHTTPSettings(center uuid.UUID) (httpSettings, error) {
 	if value.ErrorPages == nil {
 		value.ErrorPages = map[string]string{}
 	}
-	value.HTTPLogFormat = logFormatBody(value.HTTPLogFormat, "openresty_plus")
-	value.StreamLogFormat = logFormatBody(value.StreamLogFormat, "openresty_plus_stream")
+	value.HTTPLogFormat = logFormatBody(value.HTTPLogFormat, "orp")
+	value.StreamLogFormat = logFormatBody(value.StreamLogFormat, "orp_stream")
 	return value, nil
 }
 

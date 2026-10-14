@@ -81,6 +81,10 @@ const canManageGroups = computed(() => {
   const permissions = accessStore.accessCodes;
   return permissions.includes('*') || permissions.includes('orp:config:write');
 });
+const canManageSystem = computed(() => {
+  const permissions = accessStore.accessCodes;
+  return permissions.includes('*') || permissions.includes('orp:system:manage');
+});
 
 const geoIPStatus = ref<null | Awaited<ReturnType<typeof getGeoIPDatabaseStatusApi>>>(null);
 const geoIPLoading = ref(false);
@@ -215,6 +219,7 @@ const gridOptions: VxeGridProps<OrpSetting> = {
       slots: { default: 'key' },
       title: '配置键名',
     },
+    { field: 'effectiveSource', width: 120, slots: { default: 'source' }, title: '生效来源' },
     {
       field: 'group',
       width: 110,
@@ -386,10 +391,10 @@ function onDelete(row: OrpSetting) {
 <template>
   <Page
     auto-content-height
-    description="统一管理平台运行参数：支持分组筛选、参数类型格式校验、敏感信息脱敏与启停状态控制；支持自定义分组的新增 / 排序 / 删除及配置项归属调整，安全策略（密码复杂度 / 过期时间 / OTP）以预置配置项形式维护。"
+    description="运行配置优先级：显式进程配置（当前通过环境变量或 .env 提供）> 数据库系统配置 > 内置默认值。环境变量覆盖项在此显示当前来源；数据库配置修改后需按配置提示重启控制面。数据库连接、管理员引导凭据和数据加密密钥仍需通过环境变量配置。"
     title="系统配置"
   >
-    <section class="bg-card mb-3 rounded-lg border border-border p-4" aria-labelledby="geoip-database-title">
+    <section v-if="canManageSystem" class="bg-card mb-3 rounded-lg border border-border p-4" aria-labelledby="geoip-database-title">
       <div class="flex flex-wrap items-start justify-between gap-4">
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
@@ -406,7 +411,7 @@ function onDelete(row: OrpSetting) {
             <span>文件：{{ geoIPStatus.fileName }}</span>
             <span>类型：{{ geoIPStatus.databaseType }}</span>
             <span>大小：{{ formatBytes(geoIPStatus.sizeBytes) }}</span>
-            <span>来源：{{ geoIPStatus.source === 'managed' ? '控制台导入' : '环境变量配置' }}</span>
+            <span>来源：{{ geoIPStatus.source === 'managed' ? '控制台导入' : geoIPStatus.source === 'environment' ? '环境变量配置' : '系统配置' }}</span>
             <span v-if="geoIPStatus.importedAt">导入时间：{{ geoIPStatus.importedAt }}</span>
           </div>
           <div v-else class="text-muted-foreground mt-2 text-xs">
@@ -419,7 +424,7 @@ function onDelete(row: OrpSetting) {
             请仅导入已获授权使用的数据库文件；上传文件限制为 256 MB，原文件名不会用于服务器存储路径。
           </p>
         </div>
-        <div v-if="canManageGroups" class="shrink-0">
+        <div v-if="canManageSystem" class="shrink-0">
           <input
             ref="geoIPFileInput"
             accept=".mmdb,application/octet-stream"
@@ -483,7 +488,18 @@ function onDelete(row: OrpSetting) {
         <Button v-access:code="'orp:config:write'" type="primary" @click="onCreate">新增配置</Button>
       </template>
       <template #key="{ row }">
-        <span class="font-mono text-xs">{{ row.key }}</span>
+        <span class="inline-flex items-center gap-1.5">
+          <span class="font-mono text-xs">{{ row.key }}</span>
+          <Tag v-if="row.runtimeManaged" color="geekblue" class="text-[10px]">运行配置</Tag>
+        </span>
+      </template>
+      <template #source="{ row }">
+        <Tooltip v-if="row.runtimeManaged" :title="`${row.envKey} 优先级高于数据库值；${row.restartRequired ? '修改后重启控制面生效' : '运行时读取配置'}`">
+          <Tag :color="row.effectiveSource === 'environment' ? 'orange' : row.effectiveSource === 'database' ? 'blue' : 'default'">
+            {{ row.effectiveSource === 'environment' ? '环境变量' : row.effectiveSource === 'database' ? '数据库' : '默认值' }}
+          </Tag>
+        </Tooltip>
+        <span v-else class="text-muted-foreground text-xs">—</span>
       </template>
       <template #group="{ row }">
         <Tag :color="groupColor(row.group)" class="text-xs">
@@ -498,28 +514,25 @@ function onDelete(row: OrpSetting) {
       <template #value="{ row }">
         <Tooltip
           v-if="row.isSensitive"
-          title="敏感信息已脱敏展示，编辑时可查看明文"
+          :title="row.runtimeManaged && row.effectiveSource === 'environment' ? `敏感值已脱敏。当前运行值来自 ${row.envKey} 环境变量；表格值对应数据库存储项。` : '敏感信息已脱敏展示，编辑时可查看明文'"
         >
           <span class="inline-flex items-center gap-1">
             <span class="font-mono text-xs">{{ row.value }}</span>
             <Tag class="text-xs" color="red">敏感</Tag>
           </span>
         </Tooltip>
-        <span
-          v-else
-          class="block max-w-[280px] truncate font-mono text-xs"
-          :title="row.value"
-        >
-          {{ row.value }}
-        </span>
+        <Tooltip v-else-if="row.runtimeManaged && row.effectiveSource === 'environment'" :title="`当前运行值来自 ${row.envKey} 环境变量；下方显示数据库存储项。`">
+          <span class="block max-w-[280px] truncate font-mono text-xs" :title="row.value">{{ row.value }}</span>
+        </Tooltip>
+        <span v-else class="block max-w-[280px] truncate font-mono text-xs" :title="row.value">{{ row.value }}</span>
       </template>
       <template #status="{ row }">
         <Popconfirm
           v-access:code="'orp:config:write'"
           :title="
             row.status === 'enabled'
-              ? `确认禁用「${row.name}」？禁用后引用方回退默认值`
-              : `确认启用「${row.name}」？启用后配置立即生效`
+              ? `确认禁用「${row.name}」？禁用后回退到默认值或环境变量`
+              : `确认启用「${row.name}」？运行配置需重启控制面后生效`
           "
           ok-text="确认"
           cancel-text="取消"
@@ -535,7 +548,7 @@ function onDelete(row: OrpSetting) {
       </template>
       <template #action="{ row }">
         <Button v-access:code="'orp:config:write'" size="small" type="link" @click="onEdit(row)">编辑</Button>
-        <Button v-access:code="'orp:config:write'" danger size="small" type="link" @click="onDelete(row)">
+        <Button v-if="!row.runtimeManaged" v-access:code="'orp:config:write'" danger size="small" type="link" @click="onDelete(row)">
           删除
         </Button>
       </template>

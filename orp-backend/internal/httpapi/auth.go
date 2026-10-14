@@ -8,6 +8,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
+	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +31,7 @@ type loginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
 	OtpCode  string `json:"otpCode"`
+	Captcha  bool   `json:"captcha"`
 }
 
 type localUserInfo struct {
@@ -46,6 +49,10 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	var request loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&request); err != nil || strings.TrimSpace(request.Username) == "" || request.Password == "" {
 		writeAuthError(w, http.StatusBadRequest, "用户名和密码不能为空")
+		return
+	}
+	if s.loginCaptchaEnabled() && !request.Captcha {
+		writeAuthError(w, http.StatusBadRequest, "请先完成滑块验证")
 		return
 	}
 
@@ -70,6 +77,38 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	}
 	_, _ = s.db.ExecContext(r.Context(), "UPDATE orp_account SET last_login_at=NOW(6) WHERE username=?", request.Username)
 	writeAuthData(w, http.StatusOK, map[string]string{"accessToken": localToken(request.Username)})
+}
+
+// loginConfig exposes the quickstart credentials so its local login page can be
+// prefilled from the same .env used to initialize the administrator account.
+func (s *Server) loginConfig(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	username := strings.TrimSpace(os.Getenv("ORP_ADMIN_USERNAME"))
+	if username == "" {
+		username = "admin"
+	}
+	password := os.Getenv("ORP_ADMIN_PASSWORD")
+	writeAuthData(w, http.StatusOK, map[string]any{
+		"username":       username,
+		"password":       password,
+		"captchaEnabled": s.loginCaptchaEnabled(),
+	})
+}
+
+func loginCaptchaEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ORP_CAPTCHA_ENABLED"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) loginCaptchaEnabled() bool {
+	if s.runtimeSettings != nil {
+		return strings.EqualFold(strings.TrimSpace(s.runtimeValue("security.captcha_enabled")), "true") || strings.TrimSpace(s.runtimeValue("security.captcha_enabled")) == "1"
+	}
+	return loginCaptchaEnabled()
 }
 
 func (s *Server) refreshToken(w http.ResponseWriter, r *http.Request) {
@@ -105,10 +144,17 @@ func (s *Server) accessCodes(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, 500, "读取权限失败")
 		return
 	}
-	permissions := []string{}
+	permissionSet := map[string]bool{}
 	for _, role := range roles {
-		permissions = append(permissions, role.Permissions...)
+		for _, permission := range role.Permissions {
+			permissionSet[permission] = true
+		}
 	}
+	permissions := make([]string, 0, len(permissionSet))
+	for permission := range permissionSet {
+		permissions = append(permissions, permission)
+	}
+	sort.Strings(permissions)
 	writeAuthData(w, http.StatusOK, permissions)
 }
 

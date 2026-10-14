@@ -57,7 +57,7 @@ func readNodeMetrics(parent context.Context, client *http.Client, node nodeView)
 	}
 	requestContext, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
-	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, fmt.Sprintf("http://%s:%d/__openresty_plus/status", node.Host, node.ServicePort), nil)
+	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, fmt.Sprintf("http://%s:%d/__orp/status", node.Host, node.ServicePort), nil)
 	if err != nil {
 		return unavailableNodeMetrics(base, "无法创建节点状态请求")
 	}

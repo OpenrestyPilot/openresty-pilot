@@ -39,23 +39,9 @@ type geoFlow struct {
 }
 
 func (s *Server) dashboardGeography(events []accessEvent) map[string]any {
+	centerRowsOut := []map[string]any{}
 	empty := func(state, reason string) map[string]any {
-		return map[string]any{"state": state, "reason": reason, "sampleLimit": maxGeoSampleEvents, "points": []any{}, "centers": []any{}, "flows": []any{}, "unknownRequests": 0}
-	}
-	path, source := activeGeoIPDatabasePath()
-	if path == "" {
-		return empty("disabled", "尚未导入或配置 GeoIP City 数据库")
-	}
-	reader, err := maxminddb.Open(path)
-	if err != nil {
-		if source == "managed" {
-			return empty("error", "已导入的 GeoIP 数据库无法打开")
-		}
-		return empty("error", "环境变量配置的 GeoIP 数据库无法打开")
-	}
-	defer reader.Close()
-	if !isGeoIPCityDatabase(reader.Metadata.DatabaseType) {
-		return empty("error", "GeoIP 数据库不是 City 类型")
+		return map[string]any{"state": state, "reason": reason, "sampleLimit": maxGeoSampleEvents, "points": []any{}, "centers": centerRowsOut, "flows": []any{}, "unknownRequests": 0}
 	}
 	nodes, err := s.orpLoad(context.Background(), "nodes")
 	if err != nil {
@@ -84,6 +70,25 @@ func (s *Server) dashboardGeography(events []accessEvent) map[string]any {
 		if latOK && lonOK && lat >= -90 && lat <= 90 && lon >= -180 && lon <= 180 {
 			centers[id] = location{id: id, name: toString(item["name"]), longitude: lon, latitude: lat}
 		}
+	}
+	for _, center := range centers {
+		centerRowsOut = append(centerRowsOut, map[string]any{"id": center.id, "name": center.name, "coord": []float64{center.longitude, center.latitude}})
+	}
+	sort.Slice(centerRowsOut, func(i, j int) bool { return centerRowsOut[i]["id"].(int64) < centerRowsOut[j]["id"].(int64) })
+	path, source := s.activeGeoIPDatabasePath()
+	if path == "" {
+		return empty("disabled", "尚未导入或配置 GeoIP City 数据库；已显示中心位置")
+	}
+	reader, err := maxminddb.Open(path)
+	if err != nil {
+		if source == "managed" {
+			return empty("error", "已导入的 GeoIP 数据库无法打开")
+		}
+		return empty("error", "环境变量配置的 GeoIP 数据库无法打开")
+	}
+	defer reader.Close()
+	if !isGeoIPCityDatabase(reader.Metadata.DatabaseType) {
+		return empty("error", "GeoIP 数据库不是 City 类型")
 	}
 	if len(events) > maxGeoSampleEvents {
 		sort.Slice(events, func(i, j int) bool { return events[i].TS > events[j].TS })
@@ -143,10 +148,6 @@ func (s *Server) dashboardGeography(events []accessEvent) map[string]any {
 	pointRows := make([]map[string]any, 0, len(orderedPoints))
 	for _, point := range orderedPoints {
 		pointRows = append(pointRows, map[string]any{"name": point.name, "countryCode": point.countryCode, "coord": []float64{point.longitude, point.latitude}, "requests": point.requests})
-	}
-	centerRowsOut := make([]map[string]any, 0, len(centers))
-	for _, center := range centers {
-		centerRowsOut = append(centerRowsOut, map[string]any{"id": center.id, "name": center.name, "coord": []float64{center.longitude, center.latitude}})
 	}
 	flowRows := make([]map[string]any, 0, len(flows))
 	for _, flow := range flows {

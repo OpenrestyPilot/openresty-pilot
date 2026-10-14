@@ -47,10 +47,35 @@ func (s *Server) dashboardInput(w http.ResponseWriter, r *http.Request) (dashboa
 		orpFailure(w, 400, "统计时间范围无效")
 		return input, false
 	}
-	if raw := r.URL.Query().Get("centerId"); raw != "" {
+	if isPublicScreenContext(r.Context()) {
+		if r.URL.Query().Get("centerId") != "" {
+			orpFailure(w, http.StatusBadRequest, "公开大屏不支持按中心查询")
+			return input, false
+		}
+		centers, err := s.orpLoad(r.Context(), "centers")
+		if err != nil {
+			orpFailure(w, 500, "读取中心失败")
+			return input, false
+		}
+		for _, center := range centers {
+			id, _ := resourceNumber(center["id"])
+			if id > 0 {
+				input.centerIDs = append(input.centerIDs, id)
+			}
+		}
+	} else if raw := r.URL.Query().Get("centerId"); raw != "" {
 		id, err := strconv.ParseInt(raw, 10, 64)
 		if err != nil || id < 1 {
 			orpFailure(w, 400, "中心 ID 无效")
+			return input, false
+		}
+		roles, err := s.accountRoles(r, usernameFromToken(r.Header.Get("Authorization")))
+		if err != nil {
+			orpFailure(w, http.StatusUnauthorized, "用户不存在或已禁用")
+			return input, false
+		}
+		if !accountHasCenterPermission(roles, "orp:read", strconv.FormatInt(id, 10)) {
+			orpFailure(w, http.StatusForbidden, "当前角色无权访问该中心")
 			return input, false
 		}
 		input.centerIDs = []int64{id}
@@ -88,7 +113,7 @@ func (s *Server) dashboardInput(w http.ResponseWriter, r *http.Request) (dashboa
 }
 
 func (s *Server) orpDashboardMetrics(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	if _, ok := s.requirePermission(w, r, "orp:read"); !ok {
 		return
 	}
 	input, ok := s.dashboardInput(w, r)
@@ -228,6 +253,7 @@ func (s *Server) dashboardNodeLoad(ctx context.Context, centers []int64) []map[s
 	if err != nil {
 		return result
 	}
+	s.decorateNodeHealth(ctx, nodes)
 	allowed := map[int64]bool{}
 	for _, id := range centers {
 		allowed[id] = true
@@ -257,7 +283,7 @@ func (s *Server) dashboardNodeLoad(ctx context.Context, centers []int64) []map[s
 		var connections int
 		id, _ := resourceNumber(node["id"])
 		_ = s.db.QueryRowContext(ctx, "SELECT active_connections FROM orp_node_health_sample WHERE node_id=? ORDER BY id DESC LIMIT 1", id).Scan(&connections)
-		result = append(result, map[string]any{"name": node["name"], "centerName": s.publishCenterName(ctx, centerID), "status": node["status"], "cpuPercent": cpu, "memPercent": mem, "conns": connections})
+		result = append(result, map[string]any{"name": node["name"], "centerName": s.publishCenterName(ctx, centerID), "status": node["status"], "healthStatus": node["healthStatus"], "cpuPercent": cpu, "memPercent": mem, "conns": connections})
 	}
 	return result
 }
@@ -309,7 +335,7 @@ func (s *Server) dashboardUpstreamHealth(ctx context.Context, centers []int64) m
 }
 
 func (s *Server) orpDashboardTrends(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	if _, ok := s.requirePermission(w, r, "orp:read"); !ok {
 		return
 	}
 	input, ok := s.dashboardInput(w, r)
@@ -361,7 +387,7 @@ func (s *Server) orpDashboardTrends(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) orpDashboardTopRankings(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	if _, ok := s.requirePermission(w, r, "orp:read"); !ok {
 		return
 	}
 	input, ok := s.dashboardInput(w, r)

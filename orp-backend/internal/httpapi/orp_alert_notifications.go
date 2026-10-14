@@ -108,7 +108,7 @@ type alertSweepResult struct {
 }
 
 func (s *Server) orpAlertChannelsList(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	if _, ok := s.requirePermission(w, r, "orp:system:manage"); !ok {
 		return
 	}
 	rows, err := s.db.QueryContext(r.Context(), `SELECT id,name,channel_type,message_format,target_encrypted,secret_encrypted,enabled,created_at,updated_at
@@ -142,7 +142,7 @@ func (s *Server) orpAlertChannelsList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) orpAlertChannelCreate(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.orpIdentity(w, r)
+	actor, ok := s.requirePermission(w, r, "orp:system:manage")
 	if !ok {
 		return
 	}
@@ -217,7 +217,7 @@ func (s *Server) orpAlertChannelCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) orpAlertChannelUpdate(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.orpIdentity(w, r)
+	actor, ok := s.requirePermission(w, r, "orp:system:manage")
 	if !ok {
 		return
 	}
@@ -321,7 +321,7 @@ func (s *Server) orpAlertChannelUpdate(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) orpAlertChannelDelete(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.orpIdentity(w, r)
+	actor, ok := s.requirePermission(w, r, "orp:system:manage")
 	if !ok {
 		return
 	}
@@ -359,7 +359,7 @@ func (s *Server) orpAlertChannelDelete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) orpAlertChannelTest(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	if _, ok := s.requirePermission(w, r, "orp:system:manage"); !ok {
 		return
 	}
 	id, ok := orpID(w, r)
@@ -391,7 +391,7 @@ func (s *Server) orpAlertChannelTest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) orpTLSAlertRulesList(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	if _, ok := s.requirePermission(w, r, "orp:system:manage"); !ok {
 		return
 	}
 	certificates, err := s.orpLoad(r.Context(), "certificates")
@@ -480,7 +480,7 @@ func (s *Server) orpTLSAlertRulesList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) orpTLSAlertRuleSave(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.orpIdentity(w, r)
+	actor, ok := s.requirePermission(w, r, "orp:system:manage")
 	if !ok {
 		return
 	}
@@ -563,7 +563,7 @@ func (s *Server) orpTLSAlertRuleSave(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) orpAlertDeliveriesList(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	if _, ok := s.requirePermission(w, r, "orp:system:manage"); !ok {
 		return
 	}
 	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
@@ -621,7 +621,7 @@ func (s *Server) orpAlertDeliveriesList(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) orpTLSAlertsCheck(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	if _, ok := s.requirePermission(w, r, "orp:system:manage"); !ok {
 		return
 	}
 	result, err := runTLSAlertSweep(r.Context(), s.db, time.Now())

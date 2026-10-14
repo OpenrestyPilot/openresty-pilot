@@ -65,7 +65,7 @@ func sampleAllLocalNodes(ctx context.Context, db *sql.DB) {
 func sampleLocalNode(ctx context.Context, db *sql.DB, id int64, target demoTarget) {
 	probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
-	url := fmt.Sprintf("http://127.0.0.1:%d/__openresty_plus/status", target.healthPort)
+	url := fmt.Sprintf("http://127.0.0.1:%d/__orp/status", target.healthPort)
 	request, err := http.NewRequestWithContext(probeCtx, http.MethodGet, url, nil)
 	if err != nil {
 		return
@@ -93,7 +93,7 @@ func sampleLocalNode(ctx context.Context, db *sql.DB, id int64, target demoTarge
 }
 
 func (s *Server) orpNodeLatencyHistory(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	if _, ok := s.requirePermission(w, r, "orp:read"); !ok {
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -104,6 +104,11 @@ func (s *Server) orpNodeLatencyHistory(w http.ResponseWriter, r *http.Request) {
 	node, err := s.runtimeNode(r.Context(), id)
 	if err != nil {
 		orpFailure(w, 404, "节点不存在")
+		return
+	}
+	roles, roleErr := s.accountRoles(r, usernameFromToken(r.Header.Get("Authorization")))
+	if roleErr != nil || !accountHasCenterPermission(roles, "orp:read", centerIDString(node["centerId"])) {
+		orpFailure(w, http.StatusForbidden, "当前角色无权访问该节点")
 		return
 	}
 	if _, err := targetForNode(node); err != nil {
@@ -238,6 +243,21 @@ func (s *Server) decorateNodeHealth(ctx context.Context, nodes []orpDocument) {
 		node["healthStatus"] = status
 		node["healthCheckIntervalSec"] = int(nodeSampleInterval.Seconds())
 		node["healthRule"] = "最近 3 次探测全部成功为在线，部分失败为不稳定，全部失败为离线"
+		var agentState []byte
+		var agentSeen time.Time
+		if err := s.db.QueryRowContext(ctx, "SELECT state,received_at FROM orp_agent_heartbeat WHERE node_id=?", id).Scan(&agentState, &agentSeen); err == nil && time.Since(agentSeen) <= 2*time.Minute {
+			var state struct {
+				OpenRestyRunning bool `json:"openrestyRunning"`
+			}
+			if json.Unmarshal(agentState, &state) == nil {
+				node["healthStatus"] = "offline"
+				if state.OpenRestyRunning {
+					node["healthStatus"] = "online"
+				}
+				node["lastCheckedAt"] = agentSeen.Format("2006-01-02 15:04:05")
+				node["healthRule"] = "由 Node Agent 心跳上报；超过 2 分钟未收到心跳后回退到主动探测结果"
+			}
+		}
 	}
 }
 
@@ -347,7 +367,7 @@ func (s *Server) accessEvents(ctx context.Context, centerID int64, nodeFilter in
 }
 
 func (s *Server) orpNodeMetrics(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	if _, ok := s.requirePermission(w, r, "orp:read"); !ok {
 		return
 	}
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
@@ -358,6 +378,11 @@ func (s *Server) orpNodeMetrics(w http.ResponseWriter, r *http.Request) {
 	node, err := s.runtimeNode(r.Context(), id)
 	if err != nil {
 		orpFailure(w, 404, "节点不存在")
+		return
+	}
+	roles, roleErr := s.accountRoles(r, usernameFromToken(r.Header.Get("Authorization")))
+	if roleErr != nil || !accountHasCenterPermission(roles, "orp:read", centerIDString(node["centerId"])) {
+		orpFailure(w, http.StatusForbidden, "当前角色无权访问该节点")
 		return
 	}
 	target, err := targetForNode(node)

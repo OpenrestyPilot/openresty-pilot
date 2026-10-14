@@ -21,7 +21,7 @@ go test ./...
 go run ./cmd/control-plane
 ```
 
-控制面默认监听 `:8081`，数据库连接通过 `OPENRESTY_DB_*` 环境变量配置。单体构建入口是仓库根目录 `build.sh` 和 `deploy/Dockerfile`。
+控制面默认监听 `:8081`，数据库连接通过 `ORP_DB_*` 环境变量配置。单体构建入口是仓库根目录 `build.sh` 和 `deploy/Dockerfile`。
 
 ### 前端
 

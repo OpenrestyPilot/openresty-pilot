@@ -64,12 +64,12 @@ jobs:
           GOARCH: ${{ matrix.goarch }}
         run: |
           set -euo pipefail
-          package_name="openresty-plus-${RELEASE_TAG}-${GOOS}-${GOARCH}"
+          package_name="orp-${RELEASE_TAG}-${GOOS}-${GOARCH}"
           extension=""
           if [ "$GOOS" = "windows" ]; then extension=".exe"; fi
           temporary_directory=$(mktemp -d)
           trap 'rm -rf "$temporary_directory"' EXIT
-          cp dist/openresty-plus "$temporary_directory/${package_name}${extension}"
+          cp dist/orp "$temporary_directory/${package_name}${extension}"
           mkdir -p dist/release
           zip -j "dist/release/${package_name}.zip" "$temporary_directory/${package_name}${extension}"
       - uses: actions/upload-artifact@v4

@@ -36,6 +36,11 @@ func (s *Server) orpNodeStatus(w http.ResponseWriter, r *http.Request) {
 		orpFailure(w, 404, "节点不存在")
 		return
 	}
+	roles, err := s.accountRoles(r, actor)
+	if err != nil || !accountHasCenterPermission(roles, "orp:node:operate", centerIDString(node["centerId"])) {
+		orpFailure(w, http.StatusForbidden, "当前角色无权操作该节点")
+		return
+	}
 	target, err := targetForNode(node)
 	if err != nil {
 		orpFailure(w, 409, err.Error())

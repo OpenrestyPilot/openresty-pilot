@@ -37,7 +37,7 @@
 - 权重分批按节点权重升序执行；首批可进入观察期，支持自动到期、立即推进与中止未下发节点。运行中节点失败时停止后续批次。
 - 节点定时探测持久化延迟与健康状态；节点指标读取 Docker 和 NGINX 状态以及访问日志。节点运行状态操作实际启动、暂停或停止本地容器，再核对目标状态。
 - 本地节点、HTTP 监听和 Stream 服务日志按目标读取；HTTP 访问日志驱动大盘请求量、状态码、延迟、带宽、趋势与排行。六张地理大屏通过鉴权 SSE 使用真实大盘数据；配置 GeoIP City `.mmdb` 后按客户端公网 IP 聚合来源点，并仅连向录入坐标的中心。大屏页面切换时暂停 SSE，避免标签缓存留下重复长连接。
-- 三个本地 OpenResty 节点各由 Filebeat 采集 access/error 文件日志，发布到 `OPENRESTY_KAFKA_BOOTSTRAP_SERVERS` 配置的 Kafka（当前本地地址 `127.0.0.1:9092`、主题 `dtl-602-openresty-plus`）；Go 控制面按消费者组持久化、去重并解析访问记录。大盘访问指标优先使用持久化 Kafka 数据，实时日志页通过鉴权 SSE 推送新日志；没有 Kafka 记录时保留本地日志读取回退。
+- 三个本地 OpenResty 节点各由 Filebeat 采集 access/error 文件日志，发布到 `ORP_KAFKA_BOOTSTRAP_SERVERS` 配置的 Kafka（当前本地地址 `127.0.0.1:9092`、主题 `orp-access-logs`）；Go 控制面按消费者组持久化、去重并解析访问记录。大盘访问指标优先使用持久化 Kafka 数据，实时日志页通过鉴权 SSE 推送新日志；没有 Kafka 记录时保留本地日志读取回退。
 - Upstream 的普通 Hash 与一致性 Hash 策略已增加显式变量键，HTTP/Stream 渲染均生成对应指令；非法表达式被预检拒绝。
 - Stream 上的 `ip_hash` 映射为 `hash $remote_addr`，提供同客户端地址粘性选择；HTTP 仍使用原生 `ip_hash`。
 - Stream 服务可组合多个“上游组:目标端口”：渲染器展开组内节点，生成服务专属上游并代理到它。单组保留组级负载策略；多组采用轮询，其他组策略或原生指令会被预检拒绝。
@@ -60,7 +60,7 @@
 
 - 本轮增量验证：`go build ./...`、OpenAPI 56 条路由匹配、大屏内联脚本语法、前端 `typecheck` 与生产构建均通过。
 - 大盘 SSE 经真实 HTTP 验证：缓存未命中时约 7 毫秒返回等待事件、约 5.1 秒后收到完整快照；同一用户再次进入缓存命中约 9 毫秒收到快照。服务端流推送间隔为 10 秒。
-- 本地 Kafka `127.0.0.1:9092` 上的主题 `dtl-602-openresty-plus` 已由 Filebeat 自动建立；控制面消费者组正常连接且消费延迟为 0。真实请求 `release.local` 到 east-1 的 HTTP 监听后，访问日志经 Filebeat、Kafka 写入 MySQL，记录正确关联节点 11、HTTP 资源 12 和状态码 200。
+- 本地 Kafka `127.0.0.1:9092` 上的主题 `orp-access-logs` 已由 Filebeat 自动建立；控制面消费者组正常连接且消费延迟为 0。真实请求 `release.local` 到 east-1 的 HTTP 监听后，访问日志经 Filebeat、Kafka 写入 MySQL，记录正确关联节点 11、HTTP 资源 12 和状态码 200。
 - 前序变更的 `go test ./...`、`go vet ./...` 与新前端 `typecheck`、生产构建通过。
 - 使用本地 Vite `/api` 代理实际验证：管理员登录；Center 与旧表同步；RBAC 只读用户写入拦截；配置分组移动、级联删除；敏感配置读取；登出令牌失效。
 - 本地三节点预检均在对应容器内通过；全量发布后 18080/18180/18280 的版本探针返回同一候选 UUID，18082/18182/18282 的 `release.local` 路由均返回 `release-ok`。east-2 历史回滚成功。
@@ -75,4 +75,4 @@
 - `go run ./cmd/openapi-check` 成功匹配 OpenAPI 中 56 个路径到 Go ServeMux；`pnpm check:openapi` 检查通过 83 个操作及 78 个声明示例。
 - HTTP 错误页渲染与非法输入单测通过；Go 渲染器生成的候选配置及页面文件已直接放入隔离候选目录，并在本地 OpenResty 1.31.5 容器内通过 `openresty -t`。另在隔离临时监听端口验证了带 `charset` 的 JSON 请求命中特定错误页、媒体类型不匹配时返回默认页、仅配置媒体类型页面时保留原生 404 回退；临时进程已停止。前端 `typecheck`、生产构建和 OpenAPI 检查通过；此项尚未通过控制台完整发布到三台活动节点。
 
-GeoIP 数据文件不包含在仓库内。可在系统配置页导入获授权的 City `.mmdb`（默认存入 `runtime/geoip/`，目录可用 `OPENRESTY_GEOIP_STORAGE_DIR` 指定）；也兼容仓库外文件路径 `OPENRESTY_GEOIP_DB_PATH`。编辑中心时填写纬度和经度后，大屏会显示真实来源聚合及来源到节点所属中心的流线。仅公网客户端 IP 可定位，私有地址、缺失地址和数据库未命中计入未定位数。
+GeoIP 数据文件不包含在仓库内。可在系统配置页导入获授权的 City `.mmdb`（默认存入 `runtime/geoip/`，目录可用 `ORP_GEOIP_STORAGE_DIR` 指定）；也兼容仓库外文件路径 `ORP_GEOIP_DB_PATH`。编辑中心时填写纬度和经度后，大屏会显示真实来源聚合及来源到节点所属中心的流线。仅公网客户端 IP 可定位，私有地址、缺失地址和数据库未命中计入未定位数。

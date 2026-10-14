@@ -50,7 +50,7 @@ func (s *Server) orpCertificateDetail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) orpCertificatePublicDetail(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	if _, ok := s.requirePermission(w, r, "orp:read"); !ok {
 		return
 	}
 	id, ok := orpID(w, r)
@@ -70,7 +70,7 @@ func (s *Server) orpCertificatePublicDetail(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) orpCertificateStats(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	if _, ok := s.requirePermission(w, r, "orp:read"); !ok {
 		return
 	}
 	items, err := s.orpLoad(r.Context(), "certificates")
@@ -118,7 +118,11 @@ func (s *Server) orpSettingPlain(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body["isSensitive"] == true {
-		plain, err := orpOpen(toString(body["value"]))
+		plain := ""
+		var err error
+		if toString(body["value"]) != "" {
+			plain, err = orpOpen(toString(body["value"]))
+		}
 		if err != nil {
 			orpFailure(w, 500, "解密配置项失败")
 			return
@@ -129,24 +133,12 @@ func (s *Server) orpSettingPlain(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) orpSecretAccess(w http.ResponseWriter, r *http.Request) bool {
-	username, ok := s.orpIdentity(w, r)
-	if !ok {
-		return false
-	}
-	roles, err := s.accountRoles(r, username)
-	if err != nil {
-		orpFailure(w, 500, "读取权限失败")
-		return false
-	}
-	if s.requestCenterScopeAllowed(r, roles, "orp:secrets:read") {
-		return true
-	}
-	orpFailure(w, 403, "无权查看敏感信息")
-	return false
+	_, ok := s.requirePermission(w, r, "orp:secrets:read")
+	return ok
 }
 
 func (s *Server) orpAuditList(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	if _, ok := s.requirePermission(w, r, "orp:audit:read"); !ok {
 		return
 	}
 	pageNo, _ := strconv.Atoi(r.URL.Query().Get("page"))

@@ -168,8 +168,41 @@ func loadReleaseInput(tx *sql.Tx, centerID int64) (map[string][]orpDocument, map
 }
 
 func renderRelease(centerID int64, releaseID string, resources map[string][]orpDocument, singletons map[string]any) (orpRelease, error) {
+	return renderReleaseForTarget(centerID, releaseID, resources, singletons, 18080)
+}
+
+// renderReleaseForTarget renders a release for the target's management probe
+// port. Demo nodes share the host network, so the probe listener must not use
+// the same port on every node.
+func renderReleaseForTarget(centerID int64, releaseID string, resources map[string][]orpDocument, singletons map[string]any, healthPort int) (orpRelease, error) {
+	return renderReleaseForTargetWithPortOffset(centerID, releaseID, resources, singletons, healthPort, 0)
+}
+
+// renderDemoReleaseForTarget assigns every local host-network demo node its
+// own data-plane ports. Production nodes on separate hosts keep their
+// configured ports unchanged; only the three Quickstart demo endpoints use
+// this mapping.
+func renderDemoReleaseForTarget(centerID int64, releaseID string, resources map[string][]orpDocument, singletons map[string]any, healthPort int) (orpRelease, error) {
+	offset := 0
+	switch healthPort {
+	case 18080:
+		offset = 20000
+	case 18180:
+		offset = 30000
+	case 18280:
+		offset = 40000
+	default:
+		return orpRelease{}, errors.New("未知的 Quickstart 演示节点端口")
+	}
+	return renderReleaseForTargetWithPortOffset(centerID, releaseID, resources, singletons, healthPort, offset)
+}
+
+func renderReleaseForTargetWithPortOffset(centerID int64, releaseID string, resources map[string][]orpDocument, singletons map[string]any, healthPort, portOffset int) (orpRelease, error) {
 	if !regexp.MustCompile(`^[a-f0-9-]{36}$`).MatchString(releaseID) {
 		return orpRelease{}, errors.New("候选标识无效")
+	}
+	if healthPort < 1 || healthPort > 65535 {
+		return orpRelease{}, errors.New("节点探针端口无效")
 	}
 	release := orpRelease{CenterID: centerID, Files: map[string]string{}}
 	var b strings.Builder
@@ -183,9 +216,9 @@ func renderRelease(centerID int64, releaseID string, resources map[string][]orpD
 	b.WriteString("  log_format orp_http_access escape=json '{\"ts\":\"$time_iso8601\",\"status\":$status,\"rt\":$request_time,\"host\":\"$host\",\"remoteAddr\":\"$remote_addr\",\"uri\":\"$request_uri\",\"bytes\":$body_bytes_sent,\"requestBytes\":$request_length}';\n")
 	// The demo node exposes the active release from a worker response. A
 	// successful reload command alone only proves that a signal was sent.
-	b.WriteString("  server { listen 18080; server_name _;\n")
-	b.WriteString("    location = /__openresty_plus/release { default_type text/plain; return 200 \"" + releaseID + "\"; }\n")
-	b.WriteString("    location = /__openresty_plus/status { access_log off; stub_status; }\n")
+	b.WriteString(fmt.Sprintf("  server { listen %d; server_name _;\n", healthPort))
+	b.WriteString("    location = /__orp/release { default_type text/plain; return 200 \"" + releaseID + "\"; }\n")
+	b.WriteString("    location = /__orp/status { access_log off; stub_status; }\n")
 	b.WriteString("    location = /health { default_type application/json; return 200 '{\"status\":\"UP\",\"service\":\"openresty\"}'; }\n")
 	b.WriteString("    location = /runtime/status { default_type application/json; content_by_lua_block { ngx.say(require(\"cjson\").encode(require(\"runtime\").status())) } }\n")
 	b.WriteString("    location = /runtime/logs { default_type application/json; content_by_lua_block { require(\"logs\").read() } }\n")
@@ -210,7 +243,7 @@ func renderRelease(centerID int64, releaseID string, resources map[string][]orpD
 		}
 	}
 	for _, listener := range resources["http-listeners"] {
-		if err := renderHTTPServer(&b, listener, releaseID, resources["certificates"], globalErrorPages, release.Files); err != nil {
+		if err := renderHTTPServer(&b, listener, releaseID, resources["certificates"], globalErrorPages, release.Files, portOffset); err != nil {
 			return release, err
 		}
 	}
@@ -229,7 +262,7 @@ func renderRelease(centerID int64, releaseID string, resources map[string][]orpD
 		if err != nil {
 			return release, err
 		}
-		if err := renderStreamServer(&b, service, upstream); err != nil {
+		if err := renderStreamServer(&b, service, upstream, portOffset); err != nil {
 			return release, err
 		}
 	}
@@ -358,12 +391,16 @@ func renderUpstream(b *strings.Builder, group orpDocument, stream bool) error {
 	return nil
 }
 
-func renderHTTPServer(b *strings.Builder, listener orpDocument, releaseID string, certificates []orpDocument, globalErrorPages map[string]string, files map[string]string) error {
+func renderHTTPServer(b *strings.Builder, listener orpDocument, releaseID string, certificates []orpDocument, globalErrorPages map[string]string, files map[string]string, portOffset int) error {
 	listenerID, err := resourceNumber(listener["id"])
 	if err != nil || listenerID < 1 {
 		return errors.New("HTTP 监听 ID 无效")
 	}
 	port, err := resourcePort(listener["port"])
+	if err != nil {
+		return err
+	}
+	port, err = offsetReleasePort(port, portOffset)
 	if err != nil {
 		return err
 	}
@@ -765,12 +802,16 @@ func hasReleaseDirectives(value any) bool {
 	return len(items) > 0
 }
 
-func renderStreamServer(b *strings.Builder, service orpDocument, upstream string) error {
+func renderStreamServer(b *strings.Builder, service orpDocument, upstream string, portOffset int) error {
 	serviceID, err := resourceNumber(service["id"])
 	if err != nil || serviceID < 1 {
 		return errors.New("Stream 服务 ID 无效")
 	}
 	port, err := resourcePort(service["listenPort"])
+	if err != nil {
+		return err
+	}
+	port, err = offsetReleasePort(port, portOffset)
 	if err != nil {
 		return err
 	}
@@ -798,6 +839,14 @@ func renderStreamServer(b *strings.Builder, service orpDocument, upstream string
 	}
 	b.WriteString("  }\n")
 	return nil
+}
+
+func offsetReleasePort(port string, offset int) (string, error) {
+	value, err := strconv.Atoi(port)
+	if err != nil || value < 1 || value+offset > 65535 {
+		return "", errors.New("监听端口超出有效范围")
+	}
+	return strconv.Itoa(value + offset), nil
 }
 
 func sortedReleaseFiles(files map[string]string) []string {

@@ -13,13 +13,13 @@ import (
 // SeedAdmin creates the first local administrator after schema migration.
 // Existing credentials are never reset by process restarts.
 func SeedAdmin(db *sql.DB) error {
-	username := strings.TrimSpace(os.Getenv("OPENRESTY_ADMIN_USERNAME"))
+	username := strings.TrimSpace(os.Getenv("ORP_ADMIN_USERNAME"))
 	if username == "" {
-		username = "vben"
+		username = "admin"
 	}
-	password := os.Getenv("OPENRESTY_ADMIN_PASSWORD")
+	password := os.Getenv("ORP_ADMIN_PASSWORD")
 	if password == "" {
-		return fmt.Errorf("OPENRESTY_ADMIN_PASSWORD is required")
+		return fmt.Errorf("ORP_ADMIN_PASSWORD is required")
 	}
 	builtInRoles := []struct {
 		code, name, description string

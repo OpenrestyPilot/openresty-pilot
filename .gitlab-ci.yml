@@ -32,9 +32,9 @@ build-artifacts:
     - mkdir -p dist
     - docker build --pull --platform=linux/amd64 --target binary --build-arg BUILD_VERSION="${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}" --build-arg BUILD_COMMIT="$CI_COMMIT_SHA" -t "$CI_REGISTRY_IMAGE/build:$CI_COMMIT_SHA" .
     - build_container=$(docker create "$CI_REGISTRY_IMAGE/build:$CI_COMMIT_SHA")
-    - docker cp "$build_container:/openresty-plus" dist/openresty-plus
+    - docker cp "$build_container:/orp" dist/orp
     - docker rm "$build_container"
-    - chmod 0755 dist/openresty-plus
+    - chmod 0755 dist/orp
     - docker build --pull --platform=linux/amd64 --build-arg BUILD_VERSION="${CI_COMMIT_TAG:-$CI_COMMIT_SHORT_SHA}" --build-arg BUILD_COMMIT="$CI_COMMIT_SHA" -t "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA" .
     - docker push "$CI_REGISTRY_IMAGE:$CI_COMMIT_SHA"
     - |
@@ -58,9 +58,9 @@ build-artifacts:
         docker push "$CI_REGISTRY_IMAGE:beta-$CI_COMMIT_SHORT_SHA"
       fi
   artifacts:
-    name: "openresty-plus-${CI_COMMIT_REF_SLUG}"
+    name: "orp-${CI_COMMIT_REF_SLUG}"
     paths:
-      - dist/openresty-plus
+      - dist/orp
     expire_in: never
 
 release:

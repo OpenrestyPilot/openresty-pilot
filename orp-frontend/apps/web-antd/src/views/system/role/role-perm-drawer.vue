@@ -55,7 +55,7 @@ const filteredTree = computed(() => {
 });
 
 /** 统计：已选 / 可选总数 */
-const statText = computed(() => `${checkedKeys.value.length} / ${allKeys.value.length}`);
+const statText = computed(() => `${[...new Set(checkedKeys.value)].length} / ${allKeys.value.length}`);
 
 const halfChecked = computed(() => {
   const set = new Set(checkedKeys.value);

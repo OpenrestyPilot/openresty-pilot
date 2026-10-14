@@ -56,6 +56,17 @@ func runServer() error {
 	if err := store.SeedSettingGroups(database); err != nil {
 		return err
 	}
+	if err := store.SeedRuntimeSettings(database); err != nil {
+		return err
+	}
+	runtimeSettings, err := config.LoadRuntimeSettings(ctx, database)
+	if err != nil {
+		return err
+	}
+	configuration, err = runtimeSettings.Apply(configuration)
+	if err != nil {
+		return err
+	}
 	if err := httpapi.RecoverPendingPublishes(database); err != nil {
 		return err
 	}
@@ -84,7 +95,7 @@ func runServer() error {
 	})
 
 	server := &http.Server{
-		Addr: configuration.HTTPAddress, Handler: httpapi.NewWithRedis(database, redisClient),
+		Addr: configuration.HTTPAddress, Handler: httpapi.NewWithRuntimeSettings(database, redisClient, runtimeSettings),
 		ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 60 * time.Second,
 	}
 	var agentServer *http.Server

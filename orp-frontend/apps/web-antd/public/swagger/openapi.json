@@ -2,7 +2,7 @@
   "openapi": "3.0.3",
   "info": {
     "title": "ORP 配置管理平台 API",
-    "description": "面向多中心 OpenResty / Nginx 集群的配置与资源管理接口。\n\n**通用约定**\n- 响应统一包装：`{ code, message, data }`；`code=0` 表示成功，`code=-1` 表示失败（`message` 携带失败原因）\n- 鉴权：除登录外所有接口需携带 `Authorization: Bearer <token>`\n- 列表接口统一支持 `page` / `pageSize` 分页参数，返回 `PageResult` 结构\n- 时间格式：`YYYY-MM-DD HH:mm:ss`（如 `2026-09-28 10:20:00`）\n\n**业务规则**\n- 中心：存在任一关联资源（节点/HTTP/Stream/DNS/证书）时禁止删除\n- 节点：运行中（running）状态不可直接删除，需先暂停或停止；本地 Docker 节点状态操作会实际启动、暂停或停止容器\n- 发布：本地 Docker east-1/east-2/east-3 支持节点内语法校验、原子切换、reload、版本探针与回滚；生产 SSH 通道尚未配置\n- 指标：本地访问日志和节点探测为数据源；配置 OPENRESTY_GEOIP_DB_PATH 与中心经纬度后提供真实来源聚合\n- HTTP 监听：同中心同端口唯一；关联证书的适用中心范围必须包含该监听所属中心\n- Stream 服务：同中心同协议同端口唯一\n- 证书：列表接口不下发 privateKey，明文仅通过 detail 接口获取；被 HTTP 监听引用时禁止删除\n- 审计：所有写操作（新增/更新/删除/下线）自动记录审计日志",
+    "description": "面向多中心 OpenResty / Nginx 集群的配置与资源管理接口。\n\n**通用约定**\n- 响应统一包装：`{ code, message, data }`；`code=0` 表示成功，`code=-1` 表示失败（`message` 携带失败原因）\n- 鉴权：除登录外所有接口需携带 `Authorization: Bearer <token>`\n- 列表接口统一支持 `page` / `pageSize` 分页参数，返回 `PageResult` 结构\n- 时间格式：`YYYY-MM-DD HH:mm:ss`（如 `2026-09-28 10:20:00`）\n\n**业务规则**\n- 中心：存在任一关联资源（节点/HTTP/Stream/DNS/证书）时禁止删除\n- 节点：运行中（running）状态不可直接删除，需先暂停或停止；本地 Docker 节点状态操作会实际启动、暂停或停止容器\n- 发布：本地 Docker east-1/east-2/east-3 支持节点内语法校验、原子切换、reload、版本探针与回滚；生产 SSH 通道尚未配置\n- 指标：本地访问日志和节点探测为数据源；配置 ORP_GEOIP_DB_PATH 与中心经纬度后提供真实来源聚合\n- HTTP 监听：同中心同端口唯一；关联证书的适用中心范围必须包含该监听所属中心\n- Stream 服务：同中心同协议同端口唯一\n- 证书：列表接口不下发 privateKey，明文仅通过 detail 接口获取；被 HTTP 监听引用时禁止删除\n- 审计：所有写操作（新增/更新/删除/下线）自动记录审计日志",
     "version": "1.0.0"
   },
   "servers": [

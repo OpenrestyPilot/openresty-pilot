@@ -1,7 +1,7 @@
 <script lang="ts" setup>
 import type { VbenFormSchema } from '@vben/common-ui';
 
-import { computed, markRaw, onMounted } from 'vue';
+import { computed, markRaw, nextTick, onMounted, ref } from 'vue';
 
 import {
   AuthenticationLogin,
@@ -10,23 +10,30 @@ import {
 } from '@vben/common-ui';
 import { $t } from '@vben/locales';
 
+import { getLoginConfigApi } from '#/api/core/auth';
 import { useAuthStore } from '#/store';
 
 defineOptions({ name: 'Login' });
 
 const authStore = useAuthStore();
-const localDevPassword = import.meta.env.VITE_LOCAL_DEV_PASSWORD || '';
-const defaultCredentials = import.meta.env.DEV || localDevPassword
-  ? { username: 'vben', password: localDevPassword }
-  : { username: '', password: '' };
+const loginFormRef = ref<InstanceType<typeof AuthenticationLogin> | null>(null);
+const captchaEnabled = ref(false);
+const defaultCredentials = ref({ username: '', password: '' });
 
-onMounted(() => {
-  if (!import.meta.env.DEV) return;
+onMounted(async () => {
   try {
-    const savedUsername = window.localStorage.getItem('orp.local-dev-username');
-    if (savedUsername === 'vben') defaultCredentials.username = savedUsername;
+    const config = await getLoginConfigApi();
+    defaultCredentials.value = {
+      username: config.username || '',
+      password: config.password || '',
+    };
+    captchaEnabled.value = config.captchaEnabled;
+    await nextTick();
+    const formApi = loginFormRef.value?.getFormApi();
+    formApi?.setFieldValue('username', defaultCredentials.value.username);
+    formApi?.setFieldValue('password', defaultCredentials.value.password);
   } catch {
-    // 本地凭据读取失败时使用开发环境默认账号。
+    // 配置接口不可用时仍允许手动输入账号密码。
   }
 });
 
@@ -37,7 +44,7 @@ const formSchema = computed((): VbenFormSchema[] => {
       componentProps: {
         placeholder: $t('authentication.usernameTip'),
       },
-      defaultValue: defaultCredentials.username,
+      defaultValue: defaultCredentials.value.username,
       fieldName: 'username',
       label: $t('authentication.username'),
       rules: z.string().min(1, { message: $t('authentication.usernameTip') }),
@@ -47,24 +54,25 @@ const formSchema = computed((): VbenFormSchema[] => {
       componentProps: {
         placeholder: $t('authentication.password'),
       },
-      defaultValue: defaultCredentials.password,
+      defaultValue: defaultCredentials.value.password,
       fieldName: 'password',
       label: $t('authentication.password'),
       rules: z.string().min(1, { message: $t('authentication.passwordTip') }),
     },
-    {
+    ...(captchaEnabled.value ? [{
       component: markRaw(SliderCaptcha),
       fieldName: 'captcha',
       rules: z.boolean().refine((value) => value, {
         message: $t('authentication.verifyRequiredTip'),
       }),
-    },
+    }] : []),
   ];
 });
 </script>
 
 <template>
   <AuthenticationLogin
+    ref="loginFormRef"
     :form-schema="formSchema"
     :loading="authStore.loginLoading"
     :show-code-login="false"

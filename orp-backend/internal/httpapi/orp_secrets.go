@@ -17,7 +17,7 @@ import (
 const sealedPrefix = "enc:v1:"
 
 func orpSeal(value string) (string, error) {
-	key, err := hex.DecodeString(os.Getenv("OPENRESTY_DATA_KEY"))
+	key, err := hex.DecodeString(os.Getenv("ORP_DATA_KEY"))
 	if err != nil || len(key) != 32 {
 		return "", errors.New("invalid encryption key")
 	}
@@ -41,7 +41,7 @@ func orpOpen(value string) (string, error) {
 	if !strings.HasPrefix(value, sealedPrefix) {
 		return "", errors.New("stored secret is not encrypted")
 	}
-	key, err := hex.DecodeString(os.Getenv("OPENRESTY_DATA_KEY"))
+	key, err := hex.DecodeString(os.Getenv("ORP_DATA_KEY"))
 	if err != nil || len(key) != 32 {
 		return "", errors.New("invalid encryption key")
 	}

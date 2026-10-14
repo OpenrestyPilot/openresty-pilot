@@ -94,7 +94,10 @@ func (s *Server) agentBootstrapCreate(w http.ResponseWriter, r *http.Request) {
 		orpFailure(w, 403, "当前角色无权操作该节点")
 		return
 	}
-	controlURL := strings.TrimSpace(os.Getenv("ORP_AGENT_PUBLIC_URL"))
+	controlURL := strings.TrimSpace(s.runtimeValue("system.agent_public_url"))
+	if s.runtimeSettings == nil {
+		controlURL = strings.TrimSpace(os.Getenv("ORP_AGENT_PUBLIC_URL"))
+	}
 	if controlURL == "" {
 		orpFailure(w, 409, "请先配置节点可访问的 ORP_AGENT_PUBLIC_URL")
 		return

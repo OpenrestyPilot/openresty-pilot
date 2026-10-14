@@ -20,8 +20,8 @@ func TestGeoIPManagedDatabaseTakesPrecedenceOverLegacyPath(t *testing.T) {
 	if err := os.WriteFile(externalPath, []byte("external"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("OPENRESTY_GEOIP_STORAGE_DIR", managedDir)
-	t.Setenv("OPENRESTY_GEOIP_DB_PATH", externalPath)
+	t.Setenv("ORP_GEOIP_STORAGE_DIR", managedDir)
+	t.Setenv("ORP_GEOIP_DB_PATH", externalPath)
 
 	got, source := activeGeoIPDatabasePath()
 	if got != managedPath || source != "managed" {
@@ -30,12 +30,12 @@ func TestGeoIPManagedDatabaseTakesPrecedenceOverLegacyPath(t *testing.T) {
 }
 
 func TestActiveGeoIPDatabaseFallsBackToLegacyEnvironmentPath(t *testing.T) {
-	t.Setenv("OPENRESTY_GEOIP_STORAGE_DIR", t.TempDir())
+	t.Setenv("ORP_GEOIP_STORAGE_DIR", t.TempDir())
 	externalPath := filepath.Join(t.TempDir(), "external.mmdb")
 	if err := os.WriteFile(externalPath, []byte("external"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	t.Setenv("OPENRESTY_GEOIP_DB_PATH", externalPath)
+	t.Setenv("ORP_GEOIP_DB_PATH", externalPath)
 
 	got, source := activeGeoIPDatabasePath()
 	if got != externalPath || source != "environment" {

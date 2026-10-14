@@ -33,6 +33,8 @@ const canReadSecrets = computed(() => {
 const isEdit = ref(false);
 const editId = ref(0);
 const editSensitive = ref(false);
+const runtimeManaged = ref(false);
+const optionalRuntime = ref(false);
 /** 敏感值明文查看状态 */
 const showPlain = ref(false);
 const plainLoading = ref(false);
@@ -62,7 +64,7 @@ let initialSnapshot: Record<string, any> = {};
 /** 按参数类型校验键值格式（zod refine 谓词） */
 function valueFormatOk(value: unknown): boolean {
   const str = String(value ?? '').trim();
-  if (!str) return false;
+  if (!str) return optionalRuntime.value;
   const t = currentType.value;
   if (t === 'boolean') return str === 'true' || str === 'false';
   if (t === 'number') {
@@ -90,7 +92,7 @@ const [Form, formApi] = useVbenForm({
   schema: [
     {
       component: 'Input',
-      componentProps: { placeholder: '例如：system.platform_name' },
+      componentProps: { disabled: runtimeManaged, placeholder: '例如：system.platform_name' },
       fieldName: 'key',
       help: '全局唯一；小写字母开头的多级路径，段间以点分隔',
       label: '配置键名',
@@ -112,6 +114,7 @@ const [Form, formApi] = useVbenForm({
     {
       component: 'Select',
       componentProps: {
+        disabled: runtimeManaged,
         options: groupOptions,
         placeholder: '选择所属分组',
         showSearch: true,
@@ -125,6 +128,7 @@ const [Form, formApi] = useVbenForm({
     {
       component: 'Select',
       componentProps: {
+        disabled: runtimeManaged,
         options: TYPE_OPTIONS,
         placeholder: '选择参数类型',
       },
@@ -140,18 +144,16 @@ const [Form, formApi] = useVbenForm({
         placeholder: '按所选类型输入，例如：ORP / true / 30',
       },
       fieldName: 'value',
-      help: '按所选参数类型进行格式校验（JSON 非法将阻断保存）',
+      help: '按所选参数类型进行格式校验（可选运行项可留空，JSON 非法将阻断保存）',
       label: '配置键值',
-      rules: z
-        .string()
-        .min(1, { message: '配置键值为必填项' })
-        .refine((value) => valueFormatOk(value), {
+      rules: z.string().refine((value) => valueFormatOk(value), {
           message: '键值格式与所选参数类型不匹配（布尔/数字/JSON 需合法）',
         }),
     },
     {
       component: 'RadioGroup',
       componentProps: {
+        disabled: runtimeManaged,
         options: [
           { label: '启用', value: 'enabled' },
           { label: '禁用', value: 'disabled' },
@@ -207,6 +209,8 @@ const [Modal, modalApi] = useVbenModal<{ record?: OrpSetting }>({
       isEdit.value = Boolean(record);
       editId.value = record?.id ?? 0;
       editSensitive.value = record?.isSensitive ?? false;
+      runtimeManaged.value = record?.runtimeManaged ?? false;
+      optionalRuntime.value = record?.optional ?? false;
       showPlain.value = false;
       plainLoading.value = false;
       currentType.value = record?.type ?? 'string';
@@ -310,6 +314,13 @@ async function onSubmit(values: Record<string, any>) {
 
 <template>
   <Modal class="w-[680px]">
+    <Alert
+      v-if="isEdit && runtimeManaged"
+      class="mb-4"
+      :message="`运行配置：${modalApi.getData()?.record?.envKey} 环境变量优先级高于数据库配置。${modalApi.getData()?.record?.restartRequired ? '修改后需重启控制面生效。' : '本配置运行时读取。'}`"
+      show-icon
+      type="info"
+    />
     <Alert
       v-if="isEdit && editSensitive"
       class="mb-4"

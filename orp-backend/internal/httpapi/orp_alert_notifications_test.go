@@ -48,7 +48,7 @@ func TestAlertTargetHintMasksSecrets(t *testing.T) {
 }
 
 func TestPostAlertMessageWebhookSignature(t *testing.T) {
-	t.Setenv("OPENRESTY_DATA_KEY", strings.Repeat("a", 64))
+	t.Setenv("ORP_DATA_KEY", strings.Repeat("a", 64))
 	secret := "webhook-signing-secret"
 	payload := []byte(`{"eventType":"test","title":"test"}`)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +95,7 @@ func TestPostAlertMessageWebhookSignature(t *testing.T) {
 }
 
 func TestPostAlertMessageFeishuSignature(t *testing.T) {
-	t.Setenv("OPENRESTY_DATA_KEY", strings.Repeat("b", 64))
+	t.Setenv("ORP_DATA_KEY", strings.Repeat("b", 64))
 	secret := "feishu-signing-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
@@ -146,7 +146,7 @@ func TestPostAlertMessageFeishuSignature(t *testing.T) {
 }
 
 func TestPostAlertMessageFeishuCard(t *testing.T) {
-	t.Setenv("OPENRESTY_DATA_KEY", strings.Repeat("d", 64))
+	t.Setenv("ORP_DATA_KEY", strings.Repeat("d", 64))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var body map[string]any
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -216,7 +216,7 @@ func TestNormalizeAlertMessageFormat(t *testing.T) {
 }
 
 func TestPostAlertMessageFeishuRejectsBusinessAndMalformedResponses(t *testing.T) {
-	t.Setenv("OPENRESTY_DATA_KEY", strings.Repeat("c", 64))
+	t.Setenv("ORP_DATA_KEY", strings.Repeat("c", 64))
 	for _, test := range []struct {
 		name string
 		body string

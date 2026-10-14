@@ -2,6 +2,7 @@
 **/.env
 **/.env.*
 !orp-frontend/apps/web-antd/.env.example
+!orp-frontend/apps/web-antd/.env.production
 **/node_modules
 **/dist
 orp-backend/runtime

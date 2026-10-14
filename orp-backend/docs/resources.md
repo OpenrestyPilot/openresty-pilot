@@ -2,8 +2,8 @@
 - VERSION: `8.4.11`
 - IP: `192.168.100.6`
 - PORT: `3306`
-- DATABASE: `openresty-plus`
-- USERNAME: `openresty-plus`
+- DATABASE: `orp`
+- USERNAME: `orp`
 - PASSWORD: `WsyP5cTsM2SwnGSG`
 - ROOTPASSWD: `mysql_TMpTRp`
 # Redis

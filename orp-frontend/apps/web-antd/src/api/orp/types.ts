@@ -549,6 +549,16 @@ export interface OrpSetting {
   description: string;
   updatedAt: string;
   id: number;
+  /** 由控制面启动运行时读取的预置配置 */
+  runtimeManaged?: boolean;
+  /** 环境变量覆盖键 */
+  envKey?: string;
+  /** 修改后是否需要重启控制面 */
+  restartRequired?: boolean;
+  /** 当前有效值来源 */
+  effectiveSource?: 'database' | 'default' | 'environment';
+  /** 是否允许空值，用于关闭可选集成或清空密钥 */
+  optional?: boolean;
 }
 
 /** 系统配置新建/编辑载荷 */

@@ -33,6 +33,7 @@ const [Form, formApi] = useVbenForm({
       },
       fieldName: 'code',
       label: '角色编码',
+      rules: z.string().regex(/^[a-z][a-z0-9_-]{1,31}$/, { message: '编码需为 2-32 位，以小写字母开头' }),
       help: '2-32 位，小写字母开头，仅含小写字母、数字与下划线',
     },
     {

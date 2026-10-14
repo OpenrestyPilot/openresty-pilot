@@ -52,9 +52,6 @@ func Load() (Config, error) {
 	tlsCert := strings.TrimSpace(os.Getenv("ORP_AGENT_TLS_CERT_FILE"))
 	tlsKey := strings.TrimSpace(os.Getenv("ORP_AGENT_TLS_KEY_FILE"))
 	clientCA := strings.TrimSpace(os.Getenv("ORP_AGENT_CLIENT_CA_FILE"))
-	if (agentHTTPSAddress != "" || tlsCert != "" || tlsKey != "" || clientCA != "") && (agentHTTPSAddress == "" || tlsCert == "" || tlsKey == "" || clientCA == "") {
-		return Config{}, fmt.Errorf("ORP_AGENT_HTTPS_ADDR, ORP_AGENT_TLS_CERT_FILE, ORP_AGENT_TLS_KEY_FILE, and ORP_AGENT_CLIENT_CA_FILE must be configured together")
-	}
 	brokers := []string{}
 	for _, broker := range strings.Split(os.Getenv("ORP_KAFKA_BOOTSTRAP_SERVERS"), ",") {
 		if broker = strings.TrimSpace(broker); broker != "" {

@@ -94,7 +94,7 @@ MySQL 和 Redis 仅作为外置开发依赖通过环境变量或本地未提交�
 
 ### 工程命名
 
-工作区内项目目录分别为 `orp-backend`、`orp-frontend` 和 `orp-node-agent`；单体应用镜像定义位于仓库根目录 `deploy/Dockerfile`，OpenResty 与 Filebeat 演示镜像位于独立的 `orp-quickstart/deploy` 仓库。Go 模块名为 `net.daoke/orp-backend`，本地服务标识为 `openresty-plus-control-plane`。
+工作区内项目目录分别为 `orp-backend`、`orp-frontend` 和 `orp-node-agent`；单体应用镜像定义位于仓库根目录 `deploy/Dockerfile`，OpenResty 与 Filebeat 演示镜像位于独立的 `orp-quickstart/deploy` 仓库。Go 模块名为 `net.daoke/orp-backend`，本地服务标识为 `orp-control-plane`。
 
 前端项目为 `orp-frontend`，固定使用 Vben Admin `v5.7.0` 基线；Node 与 pnpm 版本以 `orp-frontend/PROJECT.md` 为准。
 
@@ -124,7 +124,7 @@ Go 控制面使用 Go 1.26、`go test ./...` 和 `go vet ./...`；单体应用�
 
 ### 实例日志通道
 
-节点日志不由控制面直接读取作为主链路。每个节点配套 Filebeat，采集 `/var/log/nginx/*.access.log` 和 `/var/log/nginx/*.error.log`，写入 Kafka topic `dtl-602-openresty-plus`。事件必须携带 `openresty.node_name` 和 `openresty_log_type`，控制面按节点缓存最近事件并提供 SSE；文件读取接口只作为故障排查备用接口。
+节点日志不由控制面直接读取作为主链路。每个节点配套 Filebeat，采集 `/var/log/nginx/*.access.log` 和 `/var/log/nginx/*.error.log`，写入 Kafka topic `orp-access-logs`。事件必须携带 `orp.node_name` 和 `orp_log_type`，控制面按节点缓存最近事件并提供 SSE；文件读取接口只作为故障排查备用接口。
 
 ### Control API 发布硬依赖
 

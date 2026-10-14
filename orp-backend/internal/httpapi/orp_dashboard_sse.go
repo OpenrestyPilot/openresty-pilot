@@ -21,13 +21,20 @@ const (
 	// Dashboard snapshots are refreshed and pushed once per second for live views.
 	dashboardPushInterval      = time.Second
 	dashboardSnapshotTTL       = 30 * time.Second
-	dashboardRefreshQueue      = "openresty-plus:dashboard:refresh"
-	dashboardSnapshotCacheBase = "openresty-plus:dashboard:snapshot:"
+	dashboardRefreshQueue      = "orp:dashboard:refresh"
+	dashboardSnapshotCacheBase = "orp:dashboard:snapshot:"
+	dashboardPublicScreenUser  = "__public-screen__"
 )
 
 var errDashboardStreamUnauthorized = errors.New("dashboard event stream authorization expired")
 
 type dashboardSnapshotContextKey struct{}
+type publicScreenContextKey struct{}
+
+func isPublicScreenContext(ctx context.Context) bool {
+	public, _ := ctx.Value(publicScreenContextKey{}).(bool)
+	return public
+}
 
 type dashboardInputCache struct{ values map[string]dashboardInput }
 
@@ -150,7 +157,8 @@ func (s *Server) orpDashboardEvents(w http.ResponseWriter, r *http.Request) {
 				flusher.Flush()
 				return
 			}
-			if _, err := s.accountRoles(r, user); err != nil {
+			roles, err := s.accountRoles(r, user)
+			if err != nil || !accountHasPermission(roles, "orp:read") {
 				writeDashboardStreamError(w, errDashboardStreamUnauthorized)
 				flusher.Flush()
 				return
@@ -200,6 +208,107 @@ func (s *Server) orpDashboardEvents(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+// orpPublicScreenEvents streams the small, read-only data contract used by the
+// standalone public display. It deliberately omits detailed routes, trends,
+// infrastructure metrics, and upstream configuration.
+func (s *Server) orpPublicScreenEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "SSE 不受当前 HTTP 服务支持", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprint(w, "retry: 3000\n\n")
+	flusher.Flush()
+
+	query := "range=1h"
+	writeSnapshot := func() {
+		if s.redis != nil {
+			s.enqueueDashboardRefresh(r.Context(), query, dashboardPublicScreenUser)
+		}
+		snapshot, err := s.dashboardSnapshot(r.Context(), query, dashboardPublicScreenUser)
+		if err != nil {
+			writeDashboardStreamError(w, err)
+			flusher.Flush()
+			return
+		}
+		payload, err := publicScreenSnapshotPayload(snapshot)
+		if err != nil {
+			writeDashboardStreamError(w, err)
+			flusher.Flush()
+			return
+		}
+		_, _ = fmt.Fprintf(w, "event: dashboard\ndata: %s\n\n", payload)
+		flusher.Flush()
+	}
+	writeSnapshot()
+	ticker := time.NewTicker(dashboardPushInterval)
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer ticker.Stop()
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-ticker.C:
+			writeSnapshot()
+		case <-heartbeat.C:
+			_, _ = fmt.Fprint(w, ": keepalive\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+func publicScreenSnapshotPayload(snapshot dashboardSnapshot) ([]byte, error) {
+	var metrics map[string]any
+	var rankings map[string]any
+	if err := json.Unmarshal(snapshot.Metrics, &metrics); err != nil {
+		return nil, err
+	}
+	if err := json.Unmarshal(snapshot.Rankings, &rankings); err != nil {
+		return nil, err
+	}
+	metrics = map[string]any{
+		"summary":     selectObjectFields(metrics["summary"], "totalRequests", "qpsAvg", "errorRate"),
+		"statusCodes": selectObjectFields(metrics["statusCodes"], "c2xx", "c3xx", "c4xx", "c5xx"),
+		"nodeLoad":    publicScreenNodeLoad(metrics["nodeLoad"]),
+		"geography":   metrics["geography"],
+	}
+	rankings = map[string]any{"domains": rankings["domains"]}
+	return json.Marshal(map[string]any{
+		"metrics":   metrics,
+		"rankings":  rankings,
+		"updatedAt": snapshot.UpdatedAt,
+	})
+}
+
+func selectObjectFields(value any, fields ...string) map[string]any {
+	object, _ := value.(map[string]any)
+	selected := make(map[string]any, len(fields))
+	for _, field := range fields {
+		if value, ok := object[field]; ok {
+			selected[field] = value
+		}
+	}
+	return selected
+}
+
+func publicScreenNodeLoad(value any) []map[string]any {
+	rows, _ := value.([]any)
+	result := make([]map[string]any, 0, len(rows))
+	for _, row := range rows {
+		item := selectObjectFields(row, "name", "status", "healthStatus", "conns")
+		if len(item) > 0 {
+			result = append(result, item)
+		}
+	}
+	return result
 }
 
 func dashboardSnapshotKey(query, user string) string {
@@ -302,9 +411,12 @@ func (s *Server) enqueueDashboardRefresh(ctx context.Context, query, user string
 
 func buildDashboardSnapshot(ctx context.Context, database *sql.DB, query, user string) (dashboardSnapshot, error) {
 	ctx = context.WithValue(ctx, dashboardSnapshotContextKey{}, &dashboardInputCache{values: map[string]dashboardInput{}})
+	if user == dashboardPublicScreenUser {
+		ctx = context.WithValue(ctx, publicScreenContextKey{}, true)
+	}
 	server := &Server{db: database}
-	call := func(handler http.HandlerFunc) (json.RawMessage, error) {
-		request := httptest.NewRequest(http.MethodGet, "/", nil).WithContext(ctx)
+	call := func(path string, handler http.HandlerFunc) (json.RawMessage, error) {
+		request := httptest.NewRequest(http.MethodGet, path, nil).WithContext(ctx)
 		request.Header.Set("Authorization", "Bearer "+localToken(user))
 		request.URL.RawQuery = query
 		recorder := httptest.NewRecorder()
@@ -327,15 +439,15 @@ func buildDashboardSnapshot(ctx context.Context, database *sql.DB, query, user s
 		}
 		return envelope.Data, nil
 	}
-	metrics, err := call(server.orpDashboardMetrics)
+	metrics, err := call("/api/orp/dashboard/metrics", server.orpDashboardMetrics)
 	if err != nil {
 		return dashboardSnapshot{}, err
 	}
-	trends, err := call(server.orpDashboardTrends)
+	trends, err := call("/api/orp/dashboard/trends", server.orpDashboardTrends)
 	if err != nil {
 		return dashboardSnapshot{}, err
 	}
-	rankings, err := call(server.orpDashboardTopRankings)
+	rankings, err := call("/api/orp/dashboard/top-rankings", server.orpDashboardTopRankings)
 	if err != nil {
 		return dashboardSnapshot{}, err
 	}

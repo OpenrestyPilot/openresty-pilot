@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -24,6 +25,21 @@ func TestRenderReleaseDeterministicAndContainsListener(t *testing.T) {
 		if !strings.Contains(first.Config, expected) {
 			t.Fatalf("generated config missing %q", expected)
 		}
+	}
+}
+
+func TestRenderReleaseUsesTargetHealthPort(t *testing.T) {
+	for _, port := range []int{18080, 18180, 18280} {
+		release, err := renderReleaseForTarget(2, "00000000-0000-4000-8000-000000000001", nil, nil, port)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(release.Config, fmt.Sprintf("server { listen %d;", port)) {
+			t.Fatalf("generated config missing target probe listener %d", port)
+		}
+	}
+	if _, err := renderReleaseForTarget(2, "00000000-0000-4000-8000-000000000001", nil, nil, 0); err == nil {
+		t.Fatal("invalid target probe port was accepted")
 	}
 }
 
@@ -153,5 +169,27 @@ func TestRenderStreamMultipleGroupsWithPortOverride(t *testing.T) {
 	resources["upstream-groups"][1]["lbPolicy"] = "least_conn"
 	if _, err := renderRelease(1, "00000000-0000-4000-8000-000000000001", resources, map[string]any{}); err == nil {
 		t.Fatal("mixed group policy was silently discarded")
+	}
+}
+
+func TestRenderReleaseForTargetKeepsTargetProbeAndServicesIndependent(t *testing.T) {
+	resources := map[string][]orpDocument{
+		"http-listeners":  {{"id": int64(1), "domain": "api.demo.local", "port": float64(80), "routes": []any{}}},
+		"stream-services": {{"id": int64(2), "protocol": "tcp", "listenAddress": "0.0.0.0", "listenPort": float64(19090), "backends": []any{"demo:19002"}}},
+		"upstream-groups": {{"name": "demo", "lbPolicy": "round_robin", "nodes": []any{map[string]any{"host": "127.0.0.1", "port": float64(19002)}}}},
+	}
+	first, err := renderReleaseForTarget(1, "00000000-0000-4000-8000-000000000001", resources, nil, 18080)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := renderReleaseForTarget(1, "00000000-0000-4000-8000-000000000001", resources, nil, 18180)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(first.Config, "listen 18080;") || !strings.Contains(second.Config, "listen 18180;") {
+		t.Fatal("target-specific probe ports were not rendered")
+	}
+	if !strings.Contains(first.Config, "listen 80;") || !strings.Contains(first.Config, "listen 0.0.0.0:19090;") {
+		t.Fatal("business listener ports were unexpectedly rewritten")
 	}
 }

@@ -104,7 +104,7 @@ func (s *Server) rbacUsersList(w http.ResponseWriter, r *http.Request) {
 		if status != "" && status != state {
 			continue
 		}
-		if keyword != "" && !strings.Contains(strings.ToLower(username+" "+realName), keyword) {
+		if keyword != "" && !strings.Contains(strings.ToLower(username+" "+realName+" "+email.String+" "+phone.String), keyword) {
 			continue
 		}
 		var roleIDs []int64
@@ -216,9 +216,12 @@ func (s *Server) rbacUserCreate(w http.ResponseWriter, r *http.Request) {
 }
 
 func parseRoleIDs(value any) ([]int64, error) {
+	if value == nil {
+		return []int64{}, nil
+	}
 	list, ok := value.([]any)
 	if !ok {
-		return []int64{}, nil
+		return nil, errors.New("角色 ID 必须为数组")
 	}
 	ids := []int64{}
 	for _, raw := range list {
@@ -226,7 +229,13 @@ func parseRoleIDs(value any) ([]int64, error) {
 		if !ok || number < 1 || number != float64(int64(number)) {
 			return nil, errors.New("角色 ID 无效")
 		}
-		ids = append(ids, int64(number))
+		id := int64(number)
+		for _, existing := range ids {
+			if existing == id {
+				return nil, errors.New("角色 ID 不能重复")
+			}
+		}
+		ids = append(ids, id)
 	}
 	return ids, nil
 }
@@ -279,24 +288,36 @@ func (s *Server) rbacUserUpdate(w http.ResponseWriter, r *http.Request) {
 		orpFailure(w, 404, "用户不存在")
 		return
 	}
+	var superID int64
+	if err := s.db.QueryRowContext(r.Context(), "SELECT id FROM orp_role WHERE code='super'").Scan(&superID); err != nil {
+		orpFailure(w, 500, "读取超级管理员角色失败")
+		return
+	}
+	hasSuper := false
+	for _, roleID := range roleIDs {
+		if roleID == superID {
+			hasSuper = true
+			break
+		}
+	}
 	if currentUsername == usernameFromToken(r.Header.Get("Authorization")) {
 		if statusInput(body["status"]) != "enabled" {
 			orpFailure(w, 409, "不能禁用当前登录账号")
 			return
 		}
-		var superID int64
-		if err := s.db.QueryRowContext(r.Context(), "SELECT id FROM orp_role WHERE code='super'").Scan(&superID); err != nil {
-			orpFailure(w, 500, "读取超级管理员角色失败")
+		if !hasSuper {
+			orpFailure(w, 409, "不能移除当前登录账号的超级管理员角色")
 			return
 		}
-		found := false
-		for _, roleID := range roleIDs {
-			if roleID == superID {
-				found = true
-			}
+	}
+	if !hasSuper {
+		var superCount int
+		if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM orp_account a JOIN JSON_TABLE(a.role_ids, '$[*]' COLUMNS(role_id BIGINT PATH '$')) r WHERE a.status='enabled' AND r.role_id=?`, superID).Scan(&superCount); err != nil {
+			orpFailure(w, 500, "检查超级管理员账号失败")
+			return
 		}
-		if !found {
-			orpFailure(w, 409, "不能移除当前登录账号的超级管理员角色")
+		if (statusInput(body["status"]) != "enabled" || currentUsername != usernameFromToken(r.Header.Get("Authorization"))) && superCount <= 1 {
+			orpFailure(w, 409, "至少需要保留一个启用的超级管理员账号")
 			return
 		}
 	}
@@ -468,6 +489,8 @@ func (s *Server) rbacRolesList(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rows.Close()
 	items := []map[string]any{}
+	keyword := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("keyword")))
+	statusFilter := r.URL.Query().Get("status")
 	for rows.Next() {
 		var id int64
 		var code, name, status string
@@ -478,6 +501,12 @@ func (s *Server) rbacRolesList(w http.ResponseWriter, r *http.Request) {
 		if err := rows.Scan(&id, &code, &name, &desc, &status, &builtin, &raw, &centerIDsRaw, &created); err != nil {
 			orpFailure(w, 500, "读取角色失败")
 			return
+		}
+		if statusFilter != "" && statusFilter != status {
+			continue
+		}
+		if keyword != "" && !strings.Contains(strings.ToLower(code+" "+name+" "+desc.String), keyword) {
+			continue
 		}
 		var keys []string
 		if err := json.Unmarshal(raw, &keys); err != nil {
@@ -490,7 +519,12 @@ func (s *Server) rbacRolesList(w http.ResponseWriter, r *http.Request) {
 			orpFailure(w, 500, "角色中心范围数据损坏")
 			return
 		}
-		items = append(items, map[string]any{"id": id, "code": code, "name": name, "description": orpNullableString(desc), "status": status, "builtin": builtin, "permissionKeys": keys, "centerIds": centerIDs, "createdAt": created.Format("2006-01-02 15:04:05")})
+		var userCount int
+		if err := s.db.QueryRowContext(r.Context(), `SELECT COUNT(*) FROM orp_account a WHERE JSON_CONTAINS(a.role_ids, CAST(? AS JSON))`, id).Scan(&userCount); err != nil {
+			orpFailure(w, 500, "读取角色用户数失败")
+			return
+		}
+		items = append(items, map[string]any{"id": id, "code": code, "name": name, "description": orpNullableString(desc), "status": status, "builtin": builtin, "userCount": userCount, "permissionKeys": keys, "centerIds": centerIDs, "createdAt": created.Format("2006-01-02 15:04:05")})
 	}
 	if err := rows.Err(); err != nil {
 		orpFailure(w, 500, "读取角色失败")
@@ -515,6 +549,16 @@ func (s *Server) rbacRoleCreate(w http.ResponseWriter, r *http.Request) {
 	code := strings.TrimSpace(toString(body["code"]))
 	if code == "" {
 		code = "role-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	}
+	if len(code) < 2 || len(code) > 32 || code[0] < 'a' || code[0] > 'z' {
+		orpFailure(w, 400, "角色编码必须为 2-32 位小写字母、数字或下划线")
+		return
+	}
+	for _, ch := range code {
+		if !(ch >= 'a' && ch <= 'z' || ch >= '0' && ch <= '9' || ch == '_' || ch == '-') {
+			orpFailure(w, 400, "角色编码必须为 2-32 位小写字母、数字或下划线")
+			return
+		}
 	}
 	permissions, err := validatedRolePermissions(body["permissionKeys"])
 	if err != nil {
@@ -698,7 +742,9 @@ func (s *Server) rbacRoleDelete(w http.ResponseWriter, r *http.Request) {
 	for rows.Next() {
 		var raw []byte
 		if rows.Scan(&raw) != nil {
-			continue
+			rows.Close()
+			orpFailure(w, 500, "检查角色引用失败")
+			return
 		}
 		var ids []int64
 		_ = json.Unmarshal(raw, &ids)
@@ -709,6 +755,11 @@ func (s *Server) rbacRoleDelete(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		orpFailure(w, 500, "检查角色引用失败")
+		return
 	}
 	rows.Close()
 	tx, err := s.db.BeginTx(r.Context(), nil)
@@ -740,13 +791,28 @@ func (s *Server) rbacPermissions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	orpReply(w, 200, []map[string]any{
-		{"key": "orp:read", "title": "查看平台配置", "type": "menu"},
-		{"key": "orp:config:write", "title": "编辑配置", "type": "action"},
-		{"key": "orp:publish", "title": "执行发布", "type": "action"},
-		{"key": "orp:node:operate", "title": "节点运维", "type": "action"},
-		{"key": "orp:system:manage", "title": "系统运维管理", "type": "action"},
-		{"key": "orp:audit:read", "title": "查看审计记录", "type": "menu"},
-		{"key": "orp:secrets:read", "title": "查看敏感数据", "type": "action"},
+		{"key": "orp:read", "title": "平台配置", "type": "menu", "children": []map[string]any{
+			{"key": "orp:read", "title": "查看配置与运行信息", "type": "action"},
+			{"key": "orp:config:write", "title": "编辑配置资源", "type": "action"},
+		}},
+		{"key": "orp:publish", "title": "发布管理", "type": "menu", "children": []map[string]any{
+			{"key": "orp:publish", "title": "预检、发布、推进、中止与回滚", "type": "action"},
+		}},
+		{"key": "orp:node:operate", "title": "节点运维", "type": "menu", "children": []map[string]any{
+			{"key": "orp:node:operate", "title": "节点状态、指标与 Agent 操作", "type": "action"},
+		}},
+		{"key": "orp:system:manage", "title": "系统运维", "type": "menu", "children": []map[string]any{
+			{"key": "orp:system:manage", "title": "告警、TLS 提醒与 GeoIP 管理", "type": "action"},
+		}},
+		{"key": "orp:audit:read", "title": "审计记录", "type": "menu", "children": []map[string]any{
+			{"key": "orp:audit:read", "title": "查看审计记录", "type": "action"},
+		}},
+		{"key": "orp:secrets:read", "title": "敏感数据", "type": "menu", "children": []map[string]any{
+			{"key": "orp:secrets:read", "title": "查看敏感配置与证书私钥", "type": "action"},
+		}},
+		{"key": "*", "title": "账号与角色管理", "type": "menu", "children": []map[string]any{
+			{"key": "*", "title": "用户、角色和权限目录管理（仅超级管理员）", "type": "action"},
+		}},
 	})
 }
 

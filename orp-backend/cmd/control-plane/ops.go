@@ -16,7 +16,7 @@ import (
 )
 
 const (
-	serviceName = "openresty-plus"
+	serviceName = "orp"
 	runCommand  = "_run"
 )
 
@@ -74,7 +74,7 @@ func runCLI(args []string) error {
 func printUsage() {
 	fmt.Printf(`ORP %s
 
-用法：openresty-plus <命令>
+用法：orp <命令>
 
 命令：
   start      后台启动服务
@@ -135,7 +135,7 @@ func loadDotEnv() error {
 }
 
 func statePaths() (string, string, error) {
-	stateDir := strings.TrimSpace(os.Getenv("OPENRESTY_STATE_DIR"))
+	stateDir := strings.TrimSpace(os.Getenv("ORP_STATE_DIR"))
 	if stateDir == "" {
 		stateDir = "runtime"
 	}
@@ -297,7 +297,7 @@ func showStatus() error {
 
 func showLogs(args []string) error {
 	if len(args) > 1 || (len(args) == 1 && args[0] != "-f" && args[0] != "--follow") {
-		return errors.New("用法：openresty-plus logs [-f|--follow]")
+		return errors.New("用法：orp logs [-f|--follow]")
 	}
 	_, logPath, err := statePaths()
 	if err != nil {

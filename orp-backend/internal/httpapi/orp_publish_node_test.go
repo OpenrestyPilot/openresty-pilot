@@ -20,3 +20,22 @@ func TestDemoTargetIsolation(t *testing.T) {
 		}
 	}
 }
+
+func TestDemoTargetHealthPortsAreUnique(t *testing.T) {
+	nodes := []orpDocument{
+		{"name": "openresty-east-1", "host": "127.0.0.1", "controlEndpoint": "http://127.0.0.1:18081"},
+		{"name": "openresty-east-2", "host": "127.0.0.1", "controlEndpoint": "http://127.0.0.1:18181"},
+		{"name": "openresty-east-3", "host": "127.0.0.1", "controlEndpoint": "http://127.0.0.1:18281"},
+	}
+	seen := map[int]bool{}
+	for _, node := range nodes {
+		target, err := targetForNode(node)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if seen[target.healthPort] {
+			t.Fatalf("demo health port %d is shared by multiple nodes", target.healthPort)
+		}
+		seen[target.healthPort] = true
+	}
+}

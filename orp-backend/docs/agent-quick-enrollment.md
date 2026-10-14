@@ -16,6 +16,8 @@ ORP_AGENT_PUBLIC_URL=https://agent.example.com:18443
 
 防火墙或负载均衡应将 `ORP_AGENT_PUBLIC_URL` 暴露到该 listener。页面签发的命令使用此 URL；Agent 请求仍通过 TLS 校验证书。已有 mTLS Agent 可继续使用证书认证。
 
+这些运行参数也可以在控制面「系统配置」页设置。显式环境变量或 `.env` 的优先级高于数据库值，数据库设置在控制面重启后生效；证书和私钥内容仍由运维安全部署到文件系统。
+
 ## 二进制节点
 
 curl/wget 命令下载 Linux amd64 Agent GitLab Release 包，安装固定 OpenResty reload helper 和 systemd 服务，再启动心跳。OpenResty 默认路径为 `/usr/local/openresty/nginx/sbin/nginx` 和 `/usr/local/openresty/nginx/conf/nginx.conf`。系统需要 systemd、sudo、curl 或 wget、tar，并以 root/sudo 执行安装命令。

@@ -3,9 +3,9 @@ set -euo pipefail
 
 backend_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 workspace_root="$(cd "$backend_dir/.." && pwd)"
-env_file=${OPENRESTY_ENV_FILE:-"$backend_dir/.env"}
+env_file=${ORP_ENV_FILE:-"$backend_dir/.env"}
 runtime_dir="$backend_dir/runtime/dev"
-if [[ -z "${OPENRESTY_ENV_FILE:-}" && ! -f "$env_file" && -f "$workspace_root/.env" ]]; then
+if [[ -z "${ORP_ENV_FILE:-}" && ! -f "$env_file" && -f "$workspace_root/.env" ]]; then
   env_file="$workspace_root/.env"
   runtime_dir="$workspace_root/runtime/dev"
 fi
@@ -31,22 +31,22 @@ while IFS= read -r line || [[ -n "$line" ]]; do
   fi
 done < "$env_file"
 
-export OPENRESTY_DB_URL=${OPENRESTY_DB_URL:-"jdbc:mysql://127.0.0.1:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-openresty-plus}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai"}
-export OPENRESTY_DB_USERNAME=${OPENRESTY_DB_USERNAME:-${MYSQL_USER:-openresty-plus}}
-export OPENRESTY_DB_PASSWORD=${OPENRESTY_DB_PASSWORD:-${MYSQL_PASSWORD:-}}
-export OPENRESTY_ADMIN_USERNAME=${OPENRESTY_ADMIN_USERNAME:-vben}
+export ORP_DB_URL=${ORP_DB_URL:-"jdbc:mysql://127.0.0.1:${MYSQL_PORT:-3306}/${MYSQL_DATABASE:-orp}?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai"}
+export ORP_DB_USERNAME=${ORP_DB_USERNAME:-${MYSQL_USER:-orp}}
+export ORP_DB_PASSWORD=${ORP_DB_PASSWORD:-${MYSQL_PASSWORD:-}}
+export ORP_ADMIN_USERNAME=${ORP_ADMIN_USERNAME:-admin}
 
-if [[ -z "${OPENRESTY_ADMIN_PASSWORD:-}" && -r "$runtime_dir/admin-password" ]]; then
-  IFS= read -r OPENRESTY_ADMIN_PASSWORD < "$runtime_dir/admin-password"
-  export OPENRESTY_ADMIN_PASSWORD
+if [[ -z "${ORP_ADMIN_PASSWORD:-}" && -r "$runtime_dir/admin-password" ]]; then
+  IFS= read -r ORP_ADMIN_PASSWORD < "$runtime_dir/admin-password"
+  export ORP_ADMIN_PASSWORD
 fi
-if [[ -z "${OPENRESTY_DATA_KEY:-}" && -r "$runtime_dir/data-key" ]]; then
-  IFS= read -r OPENRESTY_DATA_KEY < "$runtime_dir/data-key"
-  export OPENRESTY_DATA_KEY
+if [[ -z "${ORP_DATA_KEY:-}" && -r "$runtime_dir/data-key" ]]; then
+  IFS= read -r ORP_DATA_KEY < "$runtime_dir/data-key"
+  export ORP_DATA_KEY
 fi
 
-if [[ -z "${OPENRESTY_ADMIN_PASSWORD:-}" || -z "${OPENRESTY_DATA_KEY:-}" ]]; then
-  printf '缺少 OPENRESTY_ADMIN_PASSWORD 或 OPENRESTY_DATA_KEY；请先在 orp-quickstart 初始化 .env，再通过 OPENRESTY_ENV_FILE 指定配置文件。\n' >&2
+if [[ -z "${ORP_ADMIN_PASSWORD:-}" || -z "${ORP_DATA_KEY:-}" ]]; then
+  printf '缺少 ORP_ADMIN_PASSWORD 或 ORP_DATA_KEY；请先在 orp-quickstart 初始化 .env，再通过 ORP_ENV_FILE 指定配置文件。\n' >&2
   exit 1
 fi
 

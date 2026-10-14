@@ -7,7 +7,7 @@
 先在独立的 `orp-quickstart` 项目运行 `./scripts/start-source.sh` 启动源码环境，再在 monorepo 根目录执行以下命令。脚本会复用当前环境配置和本地密钥，不会在终端显示密码或密钥。它会应用缺少的数据库迁移，并幂等地创建一张 10 天后到期的自签名演示证书、一个指向本地接收器的 Webhook、一个待配置的飞书通道占位，以及已关联的 30 天提醒规则。两个通道初始均停用，不会自动外发。
 
 ```bash
-OPENRESTY_ENV_FILE=../orp-quickstart/.env ./orp-backend/scripts/seed-alert-demo.sh
+ORP_ENV_FILE=../orp-quickstart/.env ./orp-backend/scripts/seed-alert-demo.sh
 ```
 
 ## 测试通用 Webhook 和 TLS 到期提醒

@@ -50,7 +50,7 @@ type geoIPImportAudit struct {
 }
 
 func geoIPManagedPath() (string, error) {
-	directory := strings.TrimSpace(os.Getenv("OPENRESTY_GEOIP_STORAGE_DIR"))
+	directory := strings.TrimSpace(os.Getenv("ORP_GEOIP_STORAGE_DIR"))
 	if directory == "" {
 		directory = filepath.Join("runtime", "geoip")
 	}
@@ -68,8 +68,40 @@ func activeGeoIPDatabasePath() (string, string) {
 			return managed, "managed"
 		}
 	}
-	if configured := strings.TrimSpace(os.Getenv("OPENRESTY_GEOIP_DB_PATH")); configured != "" {
+	if configured := strings.TrimSpace(os.Getenv("ORP_GEOIP_DB_PATH")); configured != "" {
 		return configured, "environment"
+	}
+	return "", "none"
+}
+
+func (s *Server) geoIPManagedPath() (string, error) {
+	directory := strings.TrimSpace(s.runtimeValue("system.geoip_storage_dir"))
+	if directory == "" {
+		return geoIPManagedPath()
+	}
+	absolute, err := filepath.Abs(directory)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(absolute, geoIPDatabaseField), nil
+}
+
+func (s *Server) activeGeoIPDatabasePath() (string, string) {
+	managed, err := s.geoIPManagedPath()
+	if err == nil {
+		if info, statErr := os.Stat(managed); statErr == nil && !info.IsDir() {
+			return managed, "managed"
+		}
+	}
+	if configured := strings.TrimSpace(s.runtimeValue("system.geoip_db_path")); configured != "" {
+		source := "database"
+		if effective, ok := s.runtimeSettings["system.geoip_db_path"]; ok && effective.Source == "environment" {
+			source = "environment"
+		}
+		return configured, source
+	}
+	if s.runtimeSettings == nil {
+		return activeGeoIPDatabasePath()
 	}
 	return "", "none"
 }
@@ -139,10 +171,10 @@ func geoIPFileInfo(path string, source string) geoIPDatabaseInfo {
 }
 
 func (s *Server) orpGeoIPDatabaseGet(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	if _, ok := s.requirePermission(w, r, "orp:system:manage"); !ok {
 		return
 	}
-	path, source := activeGeoIPDatabasePath()
+	path, source := s.activeGeoIPDatabasePath()
 	info := geoIPFileInfo(path, source)
 	if source == "managed" {
 		var raw []byte
@@ -164,7 +196,7 @@ func (s *Server) orpGeoIPDatabaseGet(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) orpGeoIPDatabaseImport(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.orpIdentity(w, r)
+	actor, ok := s.requirePermission(w, r, "orp:system:manage")
 	if !ok {
 		return
 	}
@@ -199,7 +231,7 @@ func (s *Server) orpGeoIPDatabaseImport(w http.ResponseWriter, r *http.Request) 
 		orpFailure(w, http.StatusBadRequest, "数据库文件必须大于 0 且不超过 256 MB")
 		return
 	}
-	managed, err := geoIPManagedPath()
+	managed, err := s.geoIPManagedPath()
 	if err != nil {
 		orpFailure(w, http.StatusInternalServerError, "无法确定 GeoIP 数据库存储位置")
 		return

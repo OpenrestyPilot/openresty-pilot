@@ -35,17 +35,17 @@ func targetForNode(node orpDocument) (demoTarget, error) {
 		if endpoint != "http://127.0.0.1:18081" {
 			break
 		}
-		return demoTarget{name, "openresty-plus-openresty-east-1", "native-config", 18080}, nil
+		return demoTarget{name, "orp-openresty-east-1", "native-config", 18080}, nil
 	case "openresty-east-2":
 		if endpoint != "http://127.0.0.1:18181" {
 			break
 		}
-		return demoTarget{name, "openresty-plus-openresty-east-2", "native-config-east-2", 18180}, nil
+		return demoTarget{name, "orp-openresty-east-2", "native-config-east-2", 18180}, nil
 	case "openresty-east-3":
 		if endpoint != "http://127.0.0.1:18281" {
 			break
 		}
-		return demoTarget{name, "openresty-plus-openresty-east-3", "native-config-east-3", 18280}, nil
+		return demoTarget{name, "orp-openresty-east-3", "native-config-east-3", 18280}, nil
 	}
 	return demoTarget{}, errors.New("该节点尚未配置受控发布通道")
 }
@@ -56,7 +56,7 @@ func demoNodeReady(ctx context.Context, node orpDocument) error {
 		return err
 	}
 	output, err := exec.CommandContext(ctx, "docker", "inspect", "--format", `{{ index .Config.Labels "com.docker.compose.project" }} {{ index .Config.Labels "com.docker.compose.service" }}`, target.container).CombinedOutput()
-	if err != nil || strings.TrimSpace(string(output)) != "openresty-plus "+target.name {
+	if err != nil || strings.TrimSpace(string(output)) != "orp "+target.name {
 		return errors.New("本地 OpenResty 示例容器不存在或身份不匹配")
 	}
 	return nil
@@ -141,7 +141,17 @@ func validateDemoRelease(ctx context.Context, node orpDocument, releaseID string
 	if err := stageDemoRelease(target, releaseID, release); err != nil {
 		return "", err
 	}
-	return demoCommand(ctx, target, "-t", "-c", demoConfigRoot+"/candidates/"+releaseID+"/nginx.conf")
+	output, err := demoCommand(ctx, target, "-t", "-c", demoConfigRoot+"/candidates/"+releaseID+"/nginx.conf")
+	if err != nil {
+		return output, err
+	}
+	// nginx -t validates syntax but does not bind sockets. The master is
+	// already using its own management port; only the first such bind failure
+	// needs to be rejected at precheck time.
+	if strings.Contains(output, "bind() to ") && (strings.Contains(output, "Address already in use") || strings.Contains(output, "Address in use")) {
+		return output, errors.New("监听端口已被占用，请调整端口或先停止占用该端口的服务")
+	}
+	return output, nil
 }
 
 // activateDemoRelease switches the stable path only after real target-node
@@ -198,8 +208,9 @@ func swapDemoLink(active, target string) error {
 
 func waitDemoRelease(ctx context.Context, target demoTarget, releaseID string) error {
 	client := &http.Client{Timeout: time.Second}
+	lastObserved := "无响应"
 	for attempt := 0; attempt < 15; attempt++ {
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/__openresty_plus/release", target.healthPort), nil)
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/__orp/release", target.healthPort), nil)
 		if err != nil {
 			return err
 		}
@@ -207,9 +218,16 @@ func waitDemoRelease(ctx context.Context, target demoTarget, releaseID string) e
 		if err == nil {
 			body, readErr := io.ReadAll(io.LimitReader(response.Body, 128))
 			response.Body.Close()
-			if readErr == nil && response.StatusCode == 200 && strings.TrimSpace(string(body)) == releaseID {
-				return nil
+			if readErr == nil {
+				lastObserved = fmt.Sprintf("HTTP %d，版本 %q", response.StatusCode, strings.TrimSpace(string(body)))
+				if response.StatusCode == 200 && strings.TrimSpace(string(body)) == releaseID {
+					return nil
+				}
+			} else {
+				lastObserved = "读取探针响应失败: " + readErr.Error()
 			}
+		} else {
+			lastObserved = "探针请求失败: " + err.Error()
 		}
 		select {
 		case <-ctx.Done():
@@ -217,7 +235,7 @@ func waitDemoRelease(ctx context.Context, target demoTarget, releaseID string) e
 		case <-time.After(200 * time.Millisecond):
 		}
 	}
-	return errors.New("工作进程没有返回预期版本标识")
+	return fmt.Errorf("工作进程没有返回预期版本标识（期望 %s，最后观测：%s）", releaseID, lastObserved)
 }
 
 func observedDemoRelease(ctx context.Context, node orpDocument) (string, error) {
@@ -225,7 +243,7 @@ func observedDemoRelease(ctx context.Context, node orpDocument) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/__openresty_plus/release", target.healthPort), nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://127.0.0.1:%d/__orp/release", target.healthPort), nil)
 	if err != nil {
 		return "", err
 	}

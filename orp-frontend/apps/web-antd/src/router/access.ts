@@ -19,19 +19,19 @@ const forbiddenComponent = () => import('#/views/_core/fallback/forbidden.vue');
 async function generateAccess(options: GenerateMenuAndRoutesOptions) {
   const pageMap: ComponentRecordType = import.meta.glob('../views/**/*.vue');
 
-  const roleOnlyRoutes = new Set(['System', 'SystemUser', 'SystemRole', 'SystemPerm']);
   const permissionByRoute: Record<string, string> = {
     AuditLog: 'orp:audit:read',
     ConfigPublish: 'orp:publish',
+    SystemSetting: 'orp:read',
   };
-  const requiredPermissions = ['orp:read', 'orp:audit:read', 'orp:publish'];
+  const requiredPermissions = ['orp:read', 'orp:audit:read', 'orp:publish', 'orp:node:operate', 'orp:system:manage', 'orp:secrets:read'];
   const assignedCodes = useAccessStore().accessCodes;
   const accessCodes = assignedCodes.includes('*')
     ? [...new Set([...assignedCodes, ...requiredPermissions])]
     : assignedCodes;
   const routes = mapTree(options.routes, (route) => {
     if (typeof route.name !== 'string' || route.name === 'Profile') return route;
-    const authority = roleOnlyRoutes.has(route.name)
+    const authority = route.name === 'System' || ['SystemUser', 'SystemRole', 'SystemPerm'].includes(route.name)
       ? ['super']
       : [permissionByRoute[route.name] ?? 'orp:read'];
     route.meta = { ...route.meta!, authority };

@@ -1,6 +1,9 @@
 package httpapi
 
-import "testing"
+import (
+	"net/http/httptest"
+	"testing"
+)
 
 func TestMatchesRoleFilter(t *testing.T) {
 	roleIDs := []int64{2, 7}
@@ -124,5 +127,38 @@ func TestSensitivePermissionUsesItsOwnCenterScope(t *testing.T) {
 	}
 	if accountHasCenterPermission(roles, "orp:secrets:read", "29") {
 		t.Fatal("read scope from another role must not expand sensitive data access")
+	}
+}
+
+func TestCenterlessResourcesRemainSharedButScopedResourcesDoNot(t *testing.T) {
+	roles := []accountRole{{Permissions: []string{"orp:config:write"}, CenterIDs: []string{}}}
+	if !accountHasCenterPermission(roles, "orp:config:write", "") {
+		t.Fatal("centerless global configuration should be available to a role with the permission")
+	}
+	if accountHasCenterPermission(roles, "orp:config:write", "12") {
+		t.Fatal("an empty center scope must not grant access to a center resource")
+	}
+}
+
+func TestRequiredORPPermissionSeparatesOperations(t *testing.T) {
+	tests := []struct {
+		method, path, want string
+	}{
+		{method: "GET", path: "/api/orp/nodes/12/metrics", want: "orp:read"},
+		{method: "PUT", path: "/api/orp/nodes/12/status", want: "orp:node:operate"},
+		{method: "GET", path: "/api/orp/alert-channels", want: "orp:system:manage"},
+		{method: "GET", path: "/api/orp/audit-logs", want: "orp:audit:read"},
+		{method: "GET", path: "/api/orp/certificates/12/detail", want: "orp:secrets:read"},
+		{method: "GET", path: "/api/orp/rbac/roles", want: "*"},
+		{method: "GET", path: "/api/orp/publish/history", want: "orp:read"},
+		{method: "POST", path: "/api/orp/publish", want: "orp:publish"},
+	}
+	for _, test := range tests {
+		t.Run(test.method+" "+test.path, func(t *testing.T) {
+			r := httptest.NewRequest(test.method, test.path, nil)
+			if got := requiredORPPermission(r); got != test.want {
+				t.Fatalf("requiredORPPermission() = %q, want %q", got, test.want)
+			}
+		})
 	}
 }

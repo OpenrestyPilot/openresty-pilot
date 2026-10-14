@@ -1,5 +1,6 @@
-import { baseRequestClient, requestClient } from '#/api/request';
 import { useAccessStore } from '@vben/stores';
+
+import { baseRequestClient, requestClient } from '#/api/request';
 
 export namespace AuthApi {
   /** 登录接口参数 */
@@ -15,6 +16,12 @@ export namespace AuthApi {
     accessToken: string;
   }
 
+  export interface LoginConfig {
+    captchaEnabled: boolean;
+    password: string;
+    username: string;
+  }
+
   export interface RefreshTokenResult {
     data: string;
     status: number;
@@ -26,6 +33,11 @@ export namespace AuthApi {
  */
 export async function loginApi(data: AuthApi.LoginParams) {
   return requestClient.post<AuthApi.LoginResult>('/auth/login', data);
+}
+
+/** 获取由 quickstart .env 提供的登录页默认值和验证码开关。 */
+export async function getLoginConfigApi() {
+  return requestClient.get<AuthApi.LoginConfig>('/auth/config');
 }
 
 /**

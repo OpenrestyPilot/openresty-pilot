@@ -76,10 +76,11 @@ const [Form, formApi] = useVbenForm({
     },
     {
       component: 'InputPassword',
-      componentProps: { maxLength: 32, placeholder: '6-32 位，留空则默认 123456' },
+      componentProps: { maxLength: 72, placeholder: '至少 12 位，仅新增用户时必填' },
       dependencies: { if: (values) => !values._edit, triggerFields: ['_edit'] },
       fieldName: 'password',
       label: '初始密码',
+      rules: z.string().min(12, { message: '密码至少 12 位' }).optional().or(z.literal('')),
     },
     {
       component: 'RadioGroup',

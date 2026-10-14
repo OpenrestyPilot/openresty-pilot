@@ -29,7 +29,7 @@ type publishCandidate struct {
 
 type selectedPublish struct {
 	candidate publishCandidate
-	release   orpRelease
+	releases  map[int64]orpRelease
 }
 
 type releaseSnapshot struct {
@@ -124,6 +124,9 @@ func (s *Server) freezeCandidate(ctx context.Context, actor string, centerID int
 			return candidate, release, errors.New("冻结快照时节点中心已变化")
 		}
 		node["id"] = id
+		if _, err := targetForNode(node); err != nil {
+			return candidate, release, err
+		}
 		if directives, ok := node["directives"].([]any); ok && len(directives) > 0 {
 			return candidate, release, errors.New("节点级原生指令尚未进入渲染器，不能发布该节点")
 		}
@@ -185,7 +188,7 @@ func (s *Server) orpPublishPrecheck(w http.ResponseWriter, r *http.Request) {
 	items := []map[string]any{}
 	allPassed := true
 	for _, centerID := range centerIDs {
-		candidate, release, err := s.freezeCandidate(r.Context(), actor, centerID, groups[centerID])
+		candidate, _, err := s.freezeCandidate(r.Context(), actor, centerID, groups[centerID])
 		if err != nil {
 			orpFailure(w, 409, "无法冻结候选配置: "+err.Error())
 			return
@@ -194,8 +197,20 @@ func (s *Server) orpPublishPrecheck(w http.ResponseWriter, r *http.Request) {
 		frozen, _ := snapshotConfig(candidate.Snapshot)
 		centerPassed := true
 		for _, nodeID := range groups[centerID] {
+			target, targetErr := targetForNode(frozen.Nodes[nodeID])
+			if targetErr != nil {
+				allPassed, centerPassed = false, false
+				orpFailure(w, 409, targetErr.Error())
+				return
+			}
+			nodeRelease, renderErr := renderDemoReleaseForTarget(centerID, candidate.ReleaseUUID, frozen.Resources, frozen.Singletons, target.healthPort)
+			if renderErr != nil {
+				allPassed, centerPassed = false, false
+				orpFailure(w, 409, "无法为节点渲染候选配置: "+renderErr.Error())
+				return
+			}
 			ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-			output, checkErr := validateDemoRelease(ctx, frozen.Nodes[nodeID], candidate.ReleaseUUID, release)
+			output, checkErr := validateDemoRelease(ctx, frozen.Nodes[nodeID], candidate.ReleaseUUID, nodeRelease)
 			cancel()
 			passed := checkErr == nil
 			if !passed {
@@ -220,9 +235,9 @@ func (s *Server) orpPublishPrecheck(w http.ResponseWriter, r *http.Request) {
 			}
 			semanticChanges := semanticReleaseDiff(oldSnapshot, frozen)
 			semanticJSON, _ := json.Marshal(semanticChanges)
-			textLines, addCount, delCount := publishTextDiff(baselineText, release.Config)
+			textLines, addCount, delCount := publishTextDiff(baselineText, nodeRelease.Config)
 			textJSON, _ := json.Marshal(textLines)
-			planJSON, _ := json.Marshal(map[string]any{"nodeId": nodeID, "centerId": centerID, "action": "reload", "candidateDigest": candidate.Digest, "baselineRelease": baselineUUID})
+			planJSON, _ := json.Marshal(map[string]any{"nodeId": nodeID, "centerId": centerID, "action": "reload", "candidateDigest": nodeRelease.Digest, "baselineRelease": baselineUUID})
 			if _, err := s.db.ExecContext(r.Context(), "INSERT INTO orp_publish_precheck(candidate_id,node_id,passed,command_text,output_text,baseline_release_uuid,baseline_digest,semantic_diff,text_diff,publish_plan) VALUES(?,?,?,?,?,?,?,?,?,?)", candidate.ID, nodeID, passed, command, output, baselineUUID, baselineDigest, semanticJSON, textJSON, planJSON); err != nil {
 				orpFailure(w, 500, "保存节点校验结果失败")
 				return
@@ -231,7 +246,7 @@ func (s *Server) orpPublishPrecheck(w http.ResponseWriter, r *http.Request) {
 			if !passed {
 				errorsList = append(errorsList, map[string]any{"line": 0, "message": strings.TrimSpace(output)})
 			}
-			items = append(items, map[string]any{"centerId": centerID, "centerName": centerName, "nodeId": nodeID, "nodeName": frozen.Nodes[nodeID]["name"], "command": command, "output": output, "passed": passed, "errors": errorsList, "candidateDigest": candidate.Digest, "baselineRelease": baselineUUID, "semanticDiff": semanticChanges, "addCount": addCount, "delCount": delCount})
+			items = append(items, map[string]any{"centerId": centerID, "centerName": centerName, "nodeId": nodeID, "nodeName": frozen.Nodes[nodeID]["name"], "command": command, "output": output, "passed": passed, "errors": errorsList, "candidateDigest": nodeRelease.Digest, "baselineRelease": baselineUUID, "semanticDiff": semanticChanges, "addCount": addCount, "delCount": delCount})
 		}
 		status := "validated"
 		if !centerPassed {
@@ -387,12 +402,27 @@ func (s *Server) orpPublishCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	selectedByCenter := map[int64]selectedPublish{}
 	for centerID, targetIDs := range groups {
-		candidate, _, release, err := s.latestCandidate(r.Context(), actor, centerID, targetIDs)
+		candidate, snapshot, _, err := s.latestCandidate(r.Context(), actor, centerID, targetIDs)
 		if err != nil {
 			orpFailure(w, 409, err.Error())
 			return
 		}
-		selectedByCenter[centerID] = selectedPublish{candidate, release}
+		resources, singletons := snapshot.Resources, snapshot.Singletons
+		releases := make(map[int64]orpRelease, len(targetIDs))
+		for _, nodeID := range targetIDs {
+			target, err := targetForNode(snapshot.Nodes[nodeID])
+			if err != nil {
+				orpFailure(w, 409, err.Error())
+				return
+			}
+			release, err := renderDemoReleaseForTarget(centerID, candidate.ReleaseUUID, resources, singletons, target.healthPort)
+			if err != nil {
+				orpFailure(w, 409, "无法为节点渲染候选配置: "+err.Error())
+				return
+			}
+			releases[nodeID] = release
+		}
+		selectedByCenter[centerID] = selectedPublish{candidate: candidate, releases: releases}
 	}
 	tx, err := s.db.BeginTx(r.Context(), nil)
 	if err != nil {
@@ -519,7 +549,8 @@ func (s *Server) runDemoBatch(batchID int64, ids []int64, nodes map[int64]orpDoc
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		_, err := activateDemoRelease(ctx, nodes[nodeID], selected.candidate.ReleaseUUID, selected.release)
+		release := selected.releases[nodeID]
+		_, err := activateDemoRelease(ctx, nodes[nodeID], selected.candidate.ReleaseUUID, release)
 		cancel()
 		status := "success"
 		message := ""
@@ -534,7 +565,7 @@ func (s *Server) runDemoBatch(batchID int64, ids []int64, nodes map[int64]orpDoc
 			continue
 		}
 		before, _ := json.Marshal(map[string]any{"release": previous.ReleaseUUID})
-		after, _ := json.Marshal(map[string]any{"release": selected.candidate.ReleaseUUID, "digest": selected.candidate.Digest, "status": status, "error": message})
+		after, _ := json.Marshal(map[string]any{"release": selected.candidate.ReleaseUUID, "digest": release.Digest, "status": status, "error": message})
 		if _, txErr = tx.Exec("UPDATE orp_publish_item SET status=?,error_text=?,finished_at=NOW(6) WHERE batch_id=? AND node_id=?", status, message, batchID, nodeID); txErr == nil && err == nil {
 			_, txErr = tx.Exec("UPDATE orp_resource SET document=JSON_SET(document,'$.activeVersion',?) WHERE kind='nodes' AND id=?", selected.candidate.ReleaseUUID, nodeID)
 		}

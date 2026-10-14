@@ -33,7 +33,7 @@ WHERE i.node_id=? AND i.status='success' ORDER BY i.finished_at DESC,i.id DESC L
 	return item, err
 }
 
-func (s *Server) currentCenterRelease(ctx context.Context, centerID int64, releaseID string) (orpRelease, error) {
+func (s *Server) currentCenterRelease(ctx context.Context, node orpDocument, centerID int64, releaseID string) (orpRelease, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
 		return orpRelease{}, err
@@ -43,15 +43,26 @@ func (s *Server) currentCenterRelease(ctx context.Context, centerID int64, relea
 	if err != nil {
 		return orpRelease{}, err
 	}
-	release, err := renderRelease(centerID, releaseID, resources, singletons)
+	target, err := targetForNode(node)
 	if err != nil {
 		return orpRelease{}, err
 	}
+	release, err := renderDemoReleaseForTarget(centerID, releaseID, resources, singletons, target.healthPort)
+	if err != nil {
+		return orpRelease{}, err
+	}
+	// Candidate digests represent the center configuration before local demo
+	// port mapping, so keep that stable while showing the exact node config.
+	canonical, err := renderRelease(centerID, releaseID, resources, singletons)
+	if err != nil {
+		return orpRelease{}, err
+	}
+	release.Digest = canonical.Digest
 	return release, tx.Commit()
 }
 
 func (s *Server) orpPublishSummary(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.orpIdentity(w, r)
+	actor, ok := s.requirePermission(w, r, "orp:read")
 	if !ok {
 		return
 	}
@@ -84,7 +95,7 @@ func (s *Server) orpPublishSummary(w http.ResponseWriter, r *http.Request) {
 		}
 		if !pending {
 			lastChange = last.FinishedAt.Format("2006-01-02 15:04:05")
-			current, err := s.currentCenterRelease(r.Context(), centerID, last.ReleaseUUID)
+			current, err := s.currentCenterRelease(r.Context(), node, centerID, last.ReleaseUUID)
 			pending = err != nil || current.Digest != last.Digest
 			if !pending {
 				observed, err := observedDemoRelease(r.Context(), node)
@@ -138,7 +149,7 @@ func (s *Server) publishEventCount(ctx context.Context, centerID int64, since an
 }
 
 func (s *Server) orpPublishDiff(w http.ResponseWriter, r *http.Request) {
-	if _, ok := s.orpIdentity(w, r); !ok {
+	if _, ok := s.requirePermission(w, r, "orp:read"); !ok {
 		return
 	}
 	nodeID, err := strconv.ParseInt(r.URL.Query().Get("nodeId"), 10, 64)
@@ -204,7 +215,7 @@ func (s *Server) orpPublishDiff(w http.ResponseWriter, r *http.Request) {
 		orpFailure(w, 500, "读取节点发布记录失败")
 		return
 	}
-	current, err := s.currentCenterRelease(r.Context(), centerID, releaseID)
+	current, err := s.currentCenterRelease(r.Context(), node, centerID, releaseID)
 	if err != nil {
 		orpFailure(w, 409, err.Error())
 		return
@@ -277,7 +288,7 @@ func (s *Server) publishEvents(ctx context.Context, centerID int64, since any) [
 }
 
 func (s *Server) orpPublishHistory(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.orpIdentity(w, r)
+	actor, ok := s.requirePermission(w, r, "orp:read")
 	if !ok {
 		return
 	}
@@ -298,6 +309,10 @@ func (s *Server) orpPublishHistory(w http.ResponseWriter, r *http.Request) {
 	roles, err := s.accountRoles(r, actor)
 	if err != nil {
 		orpFailure(w, 500, "读取权限失败")
+		return
+	}
+	if requested := query.Get("centerId"); requested != "" && !accountHasCenterPermission(roles, "orp:publish", requested) {
+		orpFailure(w, http.StatusForbidden, "无权查看该中心的发布历史")
 		return
 	}
 	if !accountHasGlobalCenterPermission(roles, "orp:publish") && query.Get("centerId") == "" {
@@ -395,7 +410,7 @@ FROM orp_publish_item i JOIN orp_publish_batch b ON b.id=i.batch_id`+where+` ORD
 }
 
 func (s *Server) orpPublishHistoryStats(w http.ResponseWriter, r *http.Request) {
-	actor, ok := s.orpIdentity(w, r)
+	actor, ok := s.requirePermission(w, r, "orp:read")
 	if !ok {
 		return
 	}
@@ -403,6 +418,11 @@ func (s *Server) orpPublishHistoryStats(w http.ResponseWriter, r *http.Request) 
 	centerID := r.URL.Query().Get("centerId")
 	where, args := "", []any{}
 	if centerID != "" {
+		roles, roleErr := s.accountRoles(r, actor)
+		if roleErr != nil || !accountHasCenterPermission(roles, "orp:publish", centerID) {
+			orpFailure(w, http.StatusForbidden, "无权查看该中心的发布统计")
+			return
+		}
 		where, args = " AND center_id=?", []any{centerID}
 	} else {
 		roles, err := s.accountRoles(r, actor)

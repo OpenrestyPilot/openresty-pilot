@@ -33,7 +33,7 @@ if [[ ! -x "$frontend_dir/node_modules/.bin/vite" ]]; then
   (cd "$frontend_dir" && pnpm install --frozen-lockfile)
 fi
 
-temporary_dir=$(mktemp -d "${TMPDIR:-/tmp}/openresty-plus-build.XXXXXX")
+temporary_dir=$(mktemp -d "${TMPDIR:-/tmp}/orp-build.XXXXXX")
 saved_mode_override="$temporary_dir/env.production.local"
 had_mode_override=false
 
@@ -80,6 +80,6 @@ build_commit=${BUILD_COMMIT:-$(git -C "$repo_root" rev-parse --short HEAD 2>/dev
 printf '编译 Go 服务并嵌入前端……\n'
 (cd "$backend_dir" && CGO_ENABLED=0 go build -trimpath \
   -ldflags "-s -w -X main.version=$build_version -X main.commit=$build_commit" \
-  -o "$output_dir/openresty-plus" ./cmd/control-plane)
-chmod 0755 "$output_dir/openresty-plus"
-printf '构建完成：%s\n' "$output_dir/openresty-plus"
+  -o "$output_dir/orp" ./cmd/control-plane)
+chmod 0755 "$output_dir/orp"
+printf '构建完成：%s\n' "$output_dir/orp"

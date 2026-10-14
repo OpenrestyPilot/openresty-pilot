@@ -5,7 +5,7 @@
 从仓库根目录构建：
 
 ```sh
-docker build -f deploy/Dockerfile -t openresty-plus:local .
+docker build -f deploy/Dockerfile -t orp:local .
 ```
 
 OpenResty 节点、Filebeat 镜像及它们的启动编排由 `orp-quickstart` 仓库提供。
