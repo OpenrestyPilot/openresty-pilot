@@ -27,4 +27,10 @@
 
 截至 2026-10-17，本机 Quickstart 已预置 DB-IP City Lite 文件 `orp-quickstart/runtime/geoip/GeoLite2-City.mmdb`（该文件位于 Quickstart 运行目录，不在应用源码仓库内）。只读检查得到文件大小 121 MiB、SHA-256 `9e250f02722d1ad1780f88192f0e908af285478a33e76b88b349c9181ae9d0f5`；使用后端相同的 `maxminddb-golang/v2` Reader 可读取元数据 `DBIP-City-Lite`（build epoch `1790818881`，UTC `2026-10-01T01:41:21Z`），并将验收地址 `8.8.8.8` 解码为 US / Mountain View / `37.42200,-122.08500`。控制面 `/healthz` 返回 `{"status":"ok"}`；公开大屏 SSE 最近快照报告 `geography.state=ready`、`databaseType=DBIP-City-Lite`，但 `sampledEvents=7090`、`unknownRequests=7090`、`points=0`、`flows=0`。因此已验证数据库文件有效且控制面加载了 City 数据库，也验证当前日志采样未产生可定位来源点；这不是公网客户端真实来源端到端验收。Quickstart 大屏请求来自本机/演示流量，私网和回环地址不应被 GeoIP 解码为来源城市。
 
-数据库文件由 `.gitignore` 排除，不会进入源码提交。生产验收仍须使用实际公网客户端发起请求，并逐项核对访问日志中的来源 IP、Kafka/MySQL 事件与大屏位置；不得以本机数据库单 IP 解码替代该验收。
+数据库文件由 `.gitignore` 排除，不会进入源码提交。生产验收须使用实际公网客户端发起请求，并逐项核对访问日志、Kafka/MySQL 事件与大屏位置；不得以本机数据库单 IP 解码替代该验收。
+
+## 公网验证路径实时链路（2026-10-19）
+
+在 `8.137.113.9` 为精确路径 `/__orp/public-ip-check` 增加 JSON access log，日志写入 `/opt/orp-public/runtime/gateway/log/orp-http-1.access.log`；该目录挂载给 OpenResty 网关及独立 `orp-public-filebeat` 容器。Filebeat 以节点 ID `23`、名称 `public-ip-validation-8-137-113-9` 将事件发往本机 Redpanda topic `orp-access-logs`，控制面 consumer group `orp-control-plane-v1` 入库到 `orp_log_event`。未改变 18443/18444 监听端口。
+
+验收时请求返回 HTTP 200，网关日志新增一行，数据库该 URI 的记录数从 4 增至 5；Consumer Group lag 为 0。公开大屏 SSE `/api/public/screens/events` 连续推送的新快照显示 `totalRequests=1`、`geography.state=ready`、`points=1`、`unknownRequests=0`，快照时间约每 5–6 秒更新一次。目标 OpenResty `nginx -t` 通过，Filebeat 容器持续运行且未发现 error/fatal 日志。此结果只覆盖专用公网 IP 验证路径，不表示网关其他请求或完整生产日志运维验收已完成。

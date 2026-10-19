@@ -10,6 +10,10 @@
 
 控制面 `/healthz` 返回 `{"status":"ok"}`；公开大屏 SSE 当前汇总到 7090 条请求事件，说明本机 Quickstart 日志消费与聚合链路有真实运行数据。该本机证据只覆盖 Quickstart 演示环境，不代表生产集群的 Kafka 可用性、持久化/副本配置、告警、Consumer Lag SLO、故障恢复或容量验收。生产环境应独立记录 broker/topic 配置、消费者积压曲线、Filebeat 队列与重试指标、数据库写入失败及拒绝表增长情况。
 
+## 公网 IP 验证节点（2026-10-19）
+
+`8.137.113.9` 的控制面使用本机 Redpanda `127.0.0.1:9092` 和 topic `orp-access-logs`。`orp-public-gateway` 对精确路径 `/__orp/public-ip-check` 同时保留 stdout 日志并写 JSON 到 `/opt/orp-public/runtime/gateway/log/orp-http-1.access.log`；该日志目录以只读卷交给 `orp-public-filebeat`，registry/磁盘队列保存在 `/opt/orp-public/runtime/filebeat/data`。Filebeat envelope 使用 `node_id=23`、`node_name=public-ip-validation-8-137-113-9`。该路径收到一次公网验收请求后，MySQL 中对应 access event 增加一条，`orp-control-plane-v1` lag 为 0，`/api/public/screens/events` 返回 `totalRequests=1` 和一个已定位 GeoIP 点；SSE 新快照约每 5–6 秒刷新。该容器及挂载配置是该服务器的运维配置，不由 Quickstart Compose 自动创建。此前“该服务器没有 Filebeat/日志聚合”的记录是 2026-10-18 状态，已被本节 2026-10-19 的专用路径验收更新；其他业务请求的日志覆盖、保留、队列故障恢复和容量仍需单独验收。
+
 ## 观察与人工处置
 
 当前没有拒绝记录管理页面或专用管理 API。具备 MySQL 运维权限的人员可以使用 SQL 统计近期原因和积压：
