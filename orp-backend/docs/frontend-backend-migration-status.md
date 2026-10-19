@@ -84,6 +84,7 @@
 
 ## 已验证（历史记录，日期截至所列批次）
 
+- 2026-10-19 公网大屏路由与行政区索引修复：用户通过 `https://8.137.113.9:18443/screen/?map=world&mode=2d` 访问时，原配置将 `/screen/` 交给控制面 SPA，显示默认控制台；随后控制台“大屏展示”页请求 `/maps/admin-index.json` 被大屏静态目录错误接管，返回 404。已在 18443 网关增加 `/screen/` 静态入口，将大屏所需根路径 `/maps/*`、`/dotted-globe.js` 映射到只读大屏资源目录，并为 `/maps/admin-index.json` 增加精确路由代理到控制面静态资源。`nginx -t` 与 reload 成功；行政区索引通过公网返回 200，JSON 根节点为中国且含 34 个省级条目；世界地图与大屏资源可访问，18443 的 `/api/public/screens/events` 返回 SSE dashboard 事件，控制台 `/` 仍返回 OpenResty Pilot。18444 原有大屏入口及两个监听端口均不变。
 - 2026-10-18 独立公网部署复核：控制台使用 TCP 18443，大屏使用 TCP 18444；两个公网端口 TCP 握手成功，控制台 `/healthz` 返回 `200`，大屏 `/index.html` 返回 `200`。匿名 `/api/auth/config` 仅包含 `captchaEnabled`、`username`，不包含 `password`。服务运行于全新数据库；未导入旧项目业务数据，未配置 Kafka，也未接入 WAF 节点，因此当前没有真实 WAF 流量。使用自签名 TLS 证书，浏览器会显示信任警告。该结果是独立服务器部署与连通性验收，不等同于生产环境安全、容量、高可用和真实业务验收。
 - 2026-10-18 独立 Agent 部署验收：在 `192.168.100.6` 上以 `orp-agent` UID 10001 的隔离 Docker 容器运行 OpenResty 与 Agent；OpenResty 探针只映射到宿主机回环 `127.0.0.1:18080`。Agent 通过 `https://8.137.113.9:18443` 的专用 `/api/agent/v1/` 网关路径，以节点专用 Token 连接控制面 Agent HTTPS listener（后端仅绑定 `127.0.0.1:18082`）；控制面节点 21 显示在线。候选节点 `nginx -t` 成功，发布批次 2、3 成功，中央历史回滚批次 4 成功；Agent task 记录含 `candidate-validate`、`validate`、`publish` 和 `probe` 成功结果，回滚后 `/__orp/release` 返回新生成的回滚 UUID `b2eb0adb-b0e6-4d6f-8b60-4e9a71067905`。临时 HTTP 监听资源已从当前草稿移除。验证覆盖单个 Agent 的非 root profile，不代表多节点 Canary 观察门槛、控制面重启恢复、root-master/helper、多机拓扑或生产容量已经验收；短时制品下载超时和初次目录权限错误均经重试/修正后成功，相关任务失败证据保留在审计历史中。
 

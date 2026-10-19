@@ -19,12 +19,13 @@ import (
 
 const (
 	// Dashboard snapshots are refreshed and pushed once per second for live views.
-	dashboardPushInterval      = time.Second
-	dashboardSnapshotTTL       = 30 * time.Second
-	dashboardRefreshInterval   = 5 * time.Second
-	dashboardRefreshQueue      = "orp:dashboard:refresh"
-	dashboardSnapshotCacheBase = "orp:dashboard:snapshot:"
-	dashboardPublicScreenUser  = "__public-screen__"
+	dashboardPushInterval          = time.Second
+	dashboardSnapshotTTL           = 30 * time.Second
+	dashboardRefreshInterval       = 5 * time.Second
+	dashboardPublicRefreshInterval = 750 * time.Millisecond
+	dashboardRefreshQueue          = "orp:dashboard:refresh"
+	dashboardSnapshotCacheBase     = "orp:dashboard:snapshot:"
+	dashboardPublicScreenUser      = "__public-screen__"
 )
 
 var errDashboardStreamUnauthorized = errors.New("dashboard event stream authorization expired")
@@ -393,7 +394,7 @@ func (s *Server) dashboardSnapshot(ctx context.Context, query, user string) (das
 	if s.redis == nil {
 		if cached, ok := dashboardSnapshotMemory.Load(flightKey); ok {
 			entry := cached.(dashboardSnapshotMemoryEntry)
-			if time.Since(entry.CachedAt) < dashboardRefreshInterval {
+			if time.Since(entry.CachedAt) < dashboardRefreshIntervalForUser(user) {
 				return entry.Snapshot, nil
 			}
 		}
@@ -458,7 +459,13 @@ func (s *Server) enqueueDashboardRefresh(ctx context.Context, query, user string
 	queueCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
 	refreshWindow := key + ":refresh-window"
-	allowed, err := s.redis.SetNX(queueCtx, refreshWindow, "1", dashboardRefreshInterval).Result()
+	if user == dashboardPublicScreenUser {
+		// Keep public display snapshots fresh independently of the slower
+		// authenticated dashboard refresh cadence. A versioned key avoids an
+		// old five-second lock delaying the first update after deployment.
+		refreshWindow = key + ":refresh-window:public-live-v1"
+	}
+	allowed, err := s.redis.SetNX(queueCtx, refreshWindow, "1", dashboardRefreshIntervalForUser(user)).Result()
 	if err != nil || !allowed {
 		return
 	}
@@ -468,6 +475,13 @@ func (s *Server) enqueueDashboardRefresh(ctx context.Context, query, user string
 			_ = s.redis.Del(queueCtx, key+":queued").Err()
 		}
 	}
+}
+
+func dashboardRefreshIntervalForUser(user string) time.Duration {
+	if user == dashboardPublicScreenUser {
+		return dashboardPublicRefreshInterval
+	}
+	return dashboardRefreshInterval
 }
 
 func buildDashboardSnapshot(ctx context.Context, database *sql.DB, query, user string) (dashboardSnapshot, error) {

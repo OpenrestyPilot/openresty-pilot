@@ -12,7 +12,7 @@
 
 ## 公网 IP 验证节点（2026-10-19）
 
-`8.137.113.9` 的控制面使用本机 Redpanda `127.0.0.1:9092` 和 topic `orp-access-logs`。`orp-public-gateway` 对精确路径 `/__orp/public-ip-check` 同时保留 stdout 日志并写 JSON 到 `/opt/orp-public/runtime/gateway/log/orp-http-1.access.log`；该日志目录以只读卷交给 `orp-public-filebeat`，registry/磁盘队列保存在 `/opt/orp-public/runtime/filebeat/data`。Filebeat envelope 使用 `node_id=23`、`node_name=public-ip-validation-8-137-113-9`。该路径收到一次公网验收请求后，MySQL 中对应 access event 增加一条，`orp-control-plane-v1` lag 为 0，`/api/public/screens/events` 返回 `totalRequests=1` 和一个已定位 GeoIP 点；SSE 新快照约每 5–6 秒刷新。该容器及挂载配置是该服务器的运维配置，不由 Quickstart Compose 自动创建。此前“该服务器没有 Filebeat/日志聚合”的记录是 2026-10-18 状态，已被本节 2026-10-19 的专用路径验收更新；其他业务请求的日志覆盖、保留、队列故障恢复和容量仍需单独验收。
+`8.137.113.9` 的控制面使用本机 Redpanda `127.0.0.1:9092` 和 topic `orp-access-logs`。`orp-public-gateway` 对精确路径 `/__orp/public-ip-check` 同时保留 stdout 日志并写 JSON 到 `/opt/orp-public/runtime/gateway/log/orp-http-1.access.log`；该日志目录以只读卷交给 `orp-public-filebeat`，registry/磁盘队列保存在 `/opt/orp-public/runtime/filebeat/data`。Filebeat envelope 使用 `node_id=23`、`node_name=public-ip-validation-8-137-113-9`。该路径收到公网验收请求后，MySQL 对应 access event 增加，`orp-control-plane-v1` lag 为 0，公开 SSE 反映请求数和 GeoIP 点。2026-10-19 首次测得 event 入库约 5–6 秒、SSE 计数约 7 秒后变化；将公开大屏快照刷新从 5 秒节流改为约 1 秒，并把该节点 Filebeat filestream 的 `prospector.scanner.check_interval`、`backoff.init` 与 `backoff.max` 均设为 1 秒（保留 inactive 关闭时间 1 分钟）后，复测 event 入库约 0.76 秒、SSE 计数约 2 秒后变化，快照 `updatedAt` 每约 1 秒推进。Filebeat 配置语法校验通过。该容器及挂载配置是该服务器的运维配置，不由 Quickstart Compose 自动创建；其他业务请求的日志覆盖、保留、队列故障恢复和容量仍需单独验收。
 
 ## 观察与人工处置
 
