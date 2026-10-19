@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -390,62 +391,84 @@ func (s *Server) orpNodeMetrics(w http.ResponseWriter, r *http.Request) {
 		orpFailure(w, 409, err.Error())
 		return
 	}
-	if err := demoNodeReady(r.Context(), node); err != nil {
-		orpFailure(w, 502, err.Error())
-		return
+	centerID, _ := resourceNumber(node["centerId"])
+	var inspectOutput []byte
+	var cpu, memory float64
+	var statsErr, inspectErr, dailyErr, recentErr error
+	var connections int
+	var requestTotal24h, errorCount24h, lastMinute, inBytes, outBytes int64
+	var wg sync.WaitGroup
+	launch := func(fn func()) {
+		wg.Add(1)
+		go func() { defer wg.Done(); fn() }()
 	}
-	output, err := exec.CommandContext(r.Context(), "docker", "stats", "--no-stream", "--format", "{{json .}}", target.container).Output()
-	if err != nil {
+	// Docker and database reads are independent. Collect them concurrently so
+	// an SSE refresh is bounded by the slowest source instead of their sum.
+	launch(func() {
+		cpu, memory, statsErr = cachedContainerMetrics(r.Context(), target.container)
+	})
+	launch(func() {
+		inspectOutput, inspectErr = exec.CommandContext(r.Context(), "docker", "inspect", "--format", `{{ index .Config.Labels "com.docker.compose.project" }} {{ index .Config.Labels "com.docker.compose.service" }} {{.State.StartedAt}}`, target.container).Output()
+	})
+	launch(func() {
+		_ = s.db.QueryRowContext(r.Context(), "SELECT active_connections FROM orp_node_health_sample WHERE node_id=? AND ok=1 ORDER BY id DESC LIMIT 1", id).Scan(&connections)
+	})
+	launch(func() {
+		requestTotal24h, errorCount24h, dailyErr = s.nodeDailyAccessTotals(r.Context(), strconv.FormatInt(id, 10), toString(node["name"]))
+	})
+	launch(func() {
+		recentErr = s.db.QueryRowContext(r.Context(), `SELECT COUNT(*), COALESCE(SUM(request_bytes),0), COALESCE(SUM(bytes_sent),0)
+			FROM orp_log_event WHERE log_type='access' AND event_ts >= UTC_TIMESTAMP(6) - INTERVAL 1 MINUTE
+			AND (node_id=? OR node_name=?)`, id, toString(node["name"])).Scan(&lastMinute, &inBytes, &outBytes)
+	})
+	wg.Wait()
+	if statsErr != nil {
 		orpFailure(w, 502, "读取节点容器指标失败")
 		return
 	}
-	var stats struct {
-		CPU string `json:"CPUPerc"`
-		Mem string `json:"MemPerc"`
-	}
-	if json.Unmarshal(output, &stats) != nil {
-		orpFailure(w, 502, "解析节点容器指标失败")
+	inspectParts := strings.Fields(string(inspectOutput))
+	if inspectErr != nil || len(inspectParts) != 3 || inspectParts[0] != "orp" || inspectParts[1] != target.name {
+		orpFailure(w, 502, "本地 OpenResty 示例容器不存在或身份不匹配")
 		return
 	}
-	cpu, _ := strconv.ParseFloat(strings.TrimSuffix(stats.CPU, "%"), 64)
-	memory, _ := strconv.ParseFloat(strings.TrimSuffix(stats.Mem, "%"), 64)
-	var connections int
-	_ = s.db.QueryRowContext(r.Context(), "SELECT active_connections FROM orp_node_health_sample WHERE node_id=? AND ok=1 ORDER BY id DESC LIMIT 1", id).Scan(&connections)
-	centerID, _ := resourceNumber(node["centerId"])
-	events, err := s.accessEvents(r.Context(), centerID, id, time.Now().Add(-24*time.Hour))
-	if err != nil {
+	if dailyErr != nil || recentErr != nil {
 		orpFailure(w, 500, "读取节点访问数据失败")
 		return
 	}
-	now := time.Now()
-	lastMinute := 0
-	var inBytes, outBytes int64
-	errors := 0
-	for _, event := range events {
-		if event.Status >= 500 {
-			errors++
+	// The rolling QPS and bandwidth query above deliberately visits only one
+	// minute of events. The 24-hour summary is cached separately for a few
+	// seconds so an SSE subscriber does not rescan a full day on every tick.
+	// Preserve the local-file fallback only when the persisted event pipeline has
+	// no records for this node. Normal SSE updates then use indexed aggregates
+	// instead of rescanning a full day of log lines once per second.
+	if requestTotal24h == 0 {
+		events, fallbackErr := s.accessEvents(r.Context(), centerID, id, time.Now().Add(-24*time.Hour))
+		if fallbackErr != nil {
+			orpFailure(w, 500, "读取节点访问数据失败")
+			return
 		}
-		stamp, _ := time.Parse(time.RFC3339, event.TS)
-		if now.Sub(stamp) <= time.Minute {
-			lastMinute++
-			inBytes += event.RequestBytes
-			outBytes += event.Bytes
+		requestTotal24h = int64(len(events))
+		for _, event := range events {
+			if event.Status >= 500 {
+				errorCount24h++
+			}
+			stamp, _ := time.Parse(time.RFC3339, event.TS)
+			if time.Since(stamp) <= time.Minute {
+				lastMinute++
+				inBytes += event.RequestBytes
+				outBytes += event.Bytes
+			}
 		}
 	}
-	startedOutput, err := exec.CommandContext(r.Context(), "docker", "inspect", "--format", "{{.State.StartedAt}}", target.container).Output()
-	if err != nil {
-		orpFailure(w, 502, "读取节点运行时间失败")
-		return
-	}
-	started, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(string(startedOutput)))
+	started, err := time.Parse(time.RFC3339Nano, inspectParts[2])
 	if err != nil {
 		orpFailure(w, 502, "解析节点运行时间失败")
 		return
 	}
 	errorRate := 0.0
-	if len(events) > 0 {
-		errorRate = float64(errors) * 100 / float64(len(events))
+	if requestTotal24h > 0 {
+		errorRate = float64(errorCount24h) * 100 / float64(requestTotal24h)
 	}
 	node["centerName"] = s.publishCenterName(r.Context(), centerID)
-	orpReply(w, 200, map[string]any{"node": node, "metrics": map[string]any{"cpuPercent": cpu, "memPercent": memory, "connections": connections, "qps": float64(lastMinute) / 60, "requestTotal24h": len(events), "errorRatePercent": errorRate, "bandwidthInMbps": float64(inBytes) * 8 / 60 / 1e6, "bandwidthOutMbps": float64(outBytes) * 8 / 60 / 1e6, "uptimeDays": time.Since(started).Hours() / 24}})
+	orpReply(w, 200, map[string]any{"node": node, "metrics": map[string]any{"cpuPercent": cpu, "memPercent": memory, "connections": connections, "qps": float64(lastMinute) / 60, "requestTotal24h": requestTotal24h, "errorRatePercent": errorRate, "bandwidthInMbps": float64(inBytes) * 8 / 60 / 1e6, "bandwidthOutMbps": float64(outBytes) * 8 / 60 / 1e6, "uptimeDays": time.Since(started).Hours() / 24}})
 }

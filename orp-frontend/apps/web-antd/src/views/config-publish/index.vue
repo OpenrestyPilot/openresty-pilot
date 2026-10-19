@@ -7,6 +7,7 @@ import type {
 } from '#/api';
 
 import { computed, onMounted, reactive, ref } from 'vue';
+import { useRoute, useRouter } from 'vue-router';
 
 import { Page, useVbenDrawer, useVbenModal } from '@vben/common-ui';
 
@@ -32,6 +33,8 @@ import ProgressDrawer from './progress-drawer.vue';
 defineOptions({ name: 'ConfigPublishManagement' });
 
 const publishStore = usePublishStore();
+const route = useRoute();
+const router = useRouter();
 
 const loading = ref(false);
 const summary = ref<null | PublishSummary>(null);
@@ -85,7 +88,17 @@ async function loadSummary() {
   }
 }
 
-onMounted(loadSummary);
+onMounted(() => {
+  const rawBatchId = route.query.batchId;
+  const batchId = typeof rawBatchId === 'string' ? Number(rawBatchId) : Number.NaN;
+  if (Number.isSafeInteger(batchId) && batchId > 0) {
+    progressDrawerApi.setData({ batchId }).open();
+    const query = { ...route.query };
+    delete query.batchId;
+    void router.replace({ query });
+  }
+  void loadSummary();
+});
 
 function toggleCheck(id: number) {
   const ix = checked.ids.indexOf(id);

@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"log"
 	"math"
 	"net"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -98,6 +100,7 @@ func (s *Server) dashboardInput(w http.ResponseWriter, r *http.Request) (dashboa
 		}
 	}
 	input.events = []accessEvent{}
+	eventReadStarted := time.Now()
 	for _, id := range input.centerIDs {
 		events, err := s.accessEvents(r.Context(), id, 0, input.since)
 		if err != nil {
@@ -105,6 +108,9 @@ func (s *Server) dashboardInput(w http.ResponseWriter, r *http.Request) (dashboa
 			return input, false
 		}
 		input.events = append(input.events, events...)
+	}
+	if time.Since(eventReadStarted) >= time.Second {
+		log.Printf("dashboard access events centers=%d count=%d duration=%s", len(input.centerIDs), len(input.events), time.Since(eventReadStarted).Round(time.Millisecond))
 	}
 	if cached {
 		cache.values[cacheKey] = input
@@ -190,14 +196,45 @@ func (s *Server) orpDashboardMetrics(w http.ResponseWriter, r *http.Request) {
 			peak = float64(count) / 60
 		}
 	}
-	availability, err := dashboardAvailability(r.Context(), s.db, input.since, input.centerIDs)
-	if err != nil {
-		orpFailure(w, 500, "计算服务可用率失败")
-		return
+	fast, _ := r.Context().Value(dashboardFastSnapshotContextKey{}).(bool)
+	var availability *float64
+	var err error
+	nodeLoad := []map[string]any{}
+	upstream := map[string]any{"groups": []any{}, "healthy": 0, "degraded": 0, "down": 0}
+	geography := dashboardGeographyPending()
+	activeConns := 0
+	if !fast {
+		probeStarted := time.Now()
+		availability, err = dashboardAvailability(r.Context(), s.db, input.since, input.centerIDs)
+		if err != nil {
+			orpFailure(w, 500, "计算服务可用率失败")
+			return
+		}
+		if time.Since(probeStarted) >= 250*time.Millisecond {
+			log.Printf("dashboard availability duration=%s", time.Since(probeStarted).Round(time.Millisecond))
+		}
+		probeStarted = time.Now()
+		nodeLoad = s.dashboardNodeLoad(r.Context(), input.centerIDs)
+		if time.Since(probeStarted) >= 250*time.Millisecond {
+			log.Printf("dashboard node probes duration=%s", time.Since(probeStarted).Round(time.Millisecond))
+		}
+		probeStarted = time.Now()
+		upstream = s.dashboardUpstreamHealth(r.Context(), input.centerIDs)
+		if time.Since(probeStarted) >= 250*time.Millisecond {
+			log.Printf("dashboard upstream probes duration=%s", time.Since(probeStarted).Round(time.Millisecond))
+		}
+		probeStarted = time.Now()
+		geography = s.dashboardGeography(input.events)
+		if time.Since(probeStarted) >= 250*time.Millisecond {
+			log.Printf("dashboard geography duration=%s events=%d", time.Since(probeStarted).Round(time.Millisecond), len(input.events))
+		}
+		activeConns = sumNodeConnections(r.Context(), s, input.centerIDs)
 	}
-	nodeLoad := s.dashboardNodeLoad(r.Context(), input.centerIDs)
-	upstream := s.dashboardUpstreamHealth(r.Context(), input.centerIDs)
-	orpReply(w, 200, map[string]any{"summary": map[string]any{"totalRequests": len(input.events), "qpsAvg": float64(len(input.events)) / duration, "qpsPeak": peak, "bandwidthInMbps": float64(bytesIn) * 8 / duration / 1e6, "bandwidthOutMbps": float64(bytesOut) * 8 / duration / 1e6, "activeConns": sumNodeConnections(r.Context(), s, input.centerIDs), "errorRate": percent(codes5, len(input.events)), "availability": availability}, "latency": map[string]any{"p50Ms": pick(.50), "p95Ms": pick(.95), "p99Ms": pick(.99), "buckets": buckets}, "statusCodes": map[string]any{"c2xx": codes2, "c3xx": codes3, "c4xx": codes4, "c5xx": codes5, "details": details}, "nodeLoad": nodeLoad, "upstreamHealth": upstream, "geography": s.dashboardGeography(input.events)})
+	orpReply(w, 200, map[string]any{"summary": map[string]any{"totalRequests": len(input.events), "qpsAvg": float64(len(input.events)) / duration, "qpsPeak": peak, "bandwidthInMbps": float64(bytesIn) * 8 / duration / 1e6, "bandwidthOutMbps": float64(bytesOut) * 8 / duration / 1e6, "activeConns": activeConns, "errorRate": percent(codes5, len(input.events)), "availability": availability}, "latency": map[string]any{"p50Ms": pick(.50), "p95Ms": pick(.95), "p99Ms": pick(.99), "buckets": buckets}, "statusCodes": map[string]any{"c2xx": codes2, "c3xx": codes3, "c4xx": codes4, "c5xx": codes5, "details": details}, "nodeLoad": nodeLoad, "upstreamHealth": upstream, "geography": geography})
+}
+
+func dashboardGeographyPending() map[string]any {
+	return map[string]any{"state": "disabled", "reason": "首屏其余数据正在加载", "databaseType": "", "sampleLimit": maxGeoSampleEvents, "points": []any{}, "centers": []any{}, "flows": []any{}, "unknownRequests": 0}
 }
 
 func dashboardAvailability(ctx context.Context, database *sql.DB, since time.Time, centerIDs []int64) (*float64, error) {
@@ -248,17 +285,19 @@ func sumNodeConnections(ctx context.Context, s *Server, centers []int64) int {
 }
 
 func (s *Server) dashboardNodeLoad(ctx context.Context, centers []int64) []map[string]any {
-	result := []map[string]any{}
 	nodes, err := s.orpLoad(ctx, "nodes")
 	if err != nil {
-		return result
+		return []map[string]any{}
 	}
 	s.decorateNodeHealth(ctx, nodes)
 	allowed := map[int64]bool{}
 	for _, id := range centers {
 		allowed[id] = true
 	}
-	for _, node := range nodes {
+	result := make([]map[string]any, len(nodes))
+	var wait sync.WaitGroup
+	semaphore := make(chan struct{}, 8)
+	for index, node := range nodes {
 		centerID, _ := resourceNumber(node["centerId"])
 		if !allowed[centerID] {
 			continue
@@ -267,71 +306,124 @@ func (s *Server) dashboardNodeLoad(ctx context.Context, centers []int64) []map[s
 		if err != nil {
 			continue
 		}
-		output, err := exec.CommandContext(ctx, "docker", "stats", "--no-stream", "--format", "{{json .}}", target.container).Output()
-		if err != nil {
-			continue
-		}
-		var stats struct {
-			CPU string `json:"CPUPerc"`
-			Mem string `json:"MemPerc"`
-		}
-		if json.Unmarshal(output, &stats) != nil {
-			continue
-		}
-		cpu, _ := strconv.ParseFloat(strings.TrimSuffix(stats.CPU, "%"), 64)
-		mem, _ := strconv.ParseFloat(strings.TrimSuffix(stats.Mem, "%"), 64)
-		var connections int
-		id, _ := resourceNumber(node["id"])
-		_ = s.db.QueryRowContext(ctx, "SELECT active_connections FROM orp_node_health_sample WHERE node_id=? ORDER BY id DESC LIMIT 1", id).Scan(&connections)
-		result = append(result, map[string]any{"name": node["name"], "centerName": s.publishCenterName(ctx, centerID), "status": node["status"], "healthStatus": node["healthStatus"], "cpuPercent": cpu, "memPercent": mem, "conns": connections})
+		wait.Add(1)
+		go func(index int, node orpDocument, centerID int64, target demoTarget) {
+			defer wait.Done()
+			select {
+			case semaphore <- struct{}{}:
+				defer func() { <-semaphore }()
+			case <-ctx.Done():
+				return
+			}
+			probeCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
+			defer cancel()
+			output, err := exec.CommandContext(probeCtx, "docker", "stats", "--no-stream", "--format", "{{json .}}", target.container).Output()
+			if err != nil {
+				return
+			}
+			var stats struct {
+				CPU string `json:"CPUPerc"`
+				Mem string `json:"MemPerc"`
+			}
+			if json.Unmarshal(output, &stats) != nil {
+				return
+			}
+			cpu, _ := strconv.ParseFloat(strings.TrimSuffix(stats.CPU, "%"), 64)
+			mem, _ := strconv.ParseFloat(strings.TrimSuffix(stats.Mem, "%"), 64)
+			var connections int
+			id, _ := resourceNumber(node["id"])
+			_ = s.db.QueryRowContext(ctx, "SELECT active_connections FROM orp_node_health_sample WHERE node_id=? ORDER BY id DESC LIMIT 1", id).Scan(&connections)
+			result[index] = map[string]any{"name": node["name"], "centerName": s.publishCenterName(ctx, centerID), "status": node["status"], "healthStatus": node["healthStatus"], "cpuPercent": cpu, "memPercent": mem, "conns": connections}
+		}(index, node, centerID, target)
 	}
-	return result
+	wait.Wait()
+	rows := make([]map[string]any, 0, len(nodes))
+	for _, row := range result {
+		if row != nil {
+			rows = append(rows, row)
+		}
+	}
+	return rows
 }
 
 func (s *Server) dashboardUpstreamHealth(ctx context.Context, centers []int64) map[string]any {
-	result := []map[string]any{}
-	healthy, degraded, down := 0, 0, 0
 	groups, err := s.orpLoad(ctx, "upstream-groups")
 	if err != nil {
-		return map[string]any{"groups": result, "healthy": 0, "degraded": 0, "down": 0}
+		return map[string]any{"groups": []map[string]any{}, "healthy": 0, "degraded": 0, "down": 0}
 	}
+	result := make([]map[string]any, len(groups))
+	healthy, degraded, down := 0, 0, 0
 	allowed := map[int64]bool{}
 	for _, id := range centers {
 		allowed[id] = true
 	}
-	for _, group := range groups {
+	var wait sync.WaitGroup
+	semaphore := make(chan struct{}, 32)
+	for index, group := range groups {
 		centerID, _ := resourceNumber(group["centerId"])
 		if !allowed[centerID] {
 			continue
 		}
 		members, _ := group["nodes"].([]any)
-		online := 0
-		for _, value := range members {
-			member, _ := value.(map[string]any)
-			host := toString(member["host"])
-			port, err := resourcePort(member["port"])
-			if err != nil {
-				continue
+		wait.Add(1)
+		go func(index int, group orpDocument, centerID int64, members []any) {
+			defer wait.Done()
+			var memberWait sync.WaitGroup
+			var onlineMu sync.Mutex
+			online := 0
+			for _, value := range members {
+				member, _ := value.(map[string]any)
+				host := toString(member["host"])
+				port, err := resourcePort(member["port"])
+				if err != nil {
+					continue
+				}
+				memberWait.Add(1)
+				go func(host, port string) {
+					defer memberWait.Done()
+					select {
+					case semaphore <- struct{}{}:
+						defer func() { <-semaphore }()
+					case <-ctx.Done():
+						return
+					}
+					dialer := net.Dialer{Timeout: 300 * time.Millisecond}
+					connection, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, port))
+					if err == nil {
+						_ = connection.Close()
+						onlineMu.Lock()
+						online++
+						onlineMu.Unlock()
+					}
+				}(host, port)
 			}
-			connection, err := net.DialTimeout("tcp", net.JoinHostPort(host, port), 300*time.Millisecond)
-			if err == nil {
-				online++
-				connection.Close()
+			memberWait.Wait()
+			status := "healthy"
+			if online == 0 {
+				status = "down"
+			} else if online < len(members) {
+				status = "degraded"
 			}
-		}
-		status := "healthy"
-		if online == 0 {
-			status = "down"
-			down++
-		} else if online < len(members) {
-			status = "degraded"
-			degraded++
-		} else {
-			healthy++
-		}
-		result = append(result, map[string]any{"name": group["name"], "centerName": s.publishCenterName(ctx, centerID), "lbPolicy": group["lbPolicy"], "healthyCount": online, "total": len(members), "onlineRate": percent(online, len(members)), "status": status})
+			result[index] = map[string]any{"name": group["name"], "centerName": s.publishCenterName(ctx, centerID), "lbPolicy": group["lbPolicy"], "healthyCount": online, "total": len(members), "onlineRate": percent(online, len(members)), "status": status}
+		}(index, group, centerID, members)
 	}
-	return map[string]any{"groups": result, "healthy": healthy, "degraded": degraded, "down": down}
+	wait.Wait()
+	groupsOut := make([]map[string]any, 0, len(result))
+	for _, item := range result {
+		if item == nil {
+			continue
+		}
+		groupsOut = append(groupsOut, item)
+		switch toString(item["status"]) {
+		case "healthy":
+			healthy++
+		case "degraded":
+			degraded++
+		case "down":
+			down++
+		}
+	}
+	return map[string]any{"groups": groupsOut, "healthy": healthy, "degraded": degraded, "down": down}
 }
 
 func (s *Server) orpDashboardTrends(w http.ResponseWriter, r *http.Request) {

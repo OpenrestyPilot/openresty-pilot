@@ -60,6 +60,11 @@ const TYPE_OPTIONS = [
   { label: '直接返回（return）', value: 'direct' },
 ];
 
+const HTTP_METHOD_OPTIONS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'].map((value) => ({
+  label: value,
+  value,
+}));
+
 /** 上游协议选项（与 Upstream 组名组合生成 proxy_pass 目标） */
 const PROTOCOL_OPTIONS = [
   { label: 'http://', value: 'http' },
@@ -192,6 +197,7 @@ const [Drawer, drawerApi] = useVbenDrawer<{ record?: HttpListener }>({
           routes.length,
           ...record.routes.map((item): LocationRule => ({
             ...item,
+            allowedMethods: [...(item.allowedMethods ?? [])],
             directives: (item.directives ?? []).map((d) => ({ ...d })),
             ipPolicy: cloneIpPolicy(item.ipPolicy),
             upstreamProtocol: (item.upstream ?? '').startsWith('https://')
@@ -240,12 +246,17 @@ function typeLabel(type?: string) {
 let tmpId = -1;
 function addRoute() {
   routes.push({
+    allowedMethods: [],
     directives: [],
     id: tmpId--,
     ipPolicy: makeIpPolicy(),
     matchType: 'prefix',
     path: '',
     proxyTimeoutMs: 30_000,
+    rateLimitEnabled: false,
+    ratePerSecond: 100,
+    rateLimitBurst: 50,
+    rateLimitNodelay: true,
     type: 'proxy',
     upstream: undefined,
     upstreamProtocol: 'http',
@@ -323,6 +334,18 @@ function validateRoutes(): null | string {
         return `${no}（直接返回）返回状态码必须是 100-599`;
       }
     }
+    if (route.rateLimitEnabled) {
+      if (!Number.isInteger(route.ratePerSecond) || route.ratePerSecond! < 1 || route.ratePerSecond! > 100_000) {
+        return `${no} 限流速率必须是 1–100000 的整数请求/秒`;
+      }
+      if (!Number.isInteger(route.rateLimitBurst) || route.rateLimitBurst! < 0 || route.rateLimitBurst! > 1_000_000) {
+        return `${no} 限流突发额度必须是 0–1000000 的整数`;
+      }
+    }
+    const allowedMethods = route.allowedMethods ?? [];
+    if (new Set(allowedMethods).size !== allowedMethods.length || allowedMethods.some((method) => !HTTP_METHOD_OPTIONS.some((option) => option.value === method))) {
+      return `${no} 允许的 HTTP 方法无效或重复`;
+    }
     // Location 块指令校验
     if (route.directives?.length) {
       const seenName = new Set<string>();
@@ -373,8 +396,13 @@ async function onSave() {
             value: d.value.trim(),
           })),
           id: typeof item.id === 'number' && item.id > 0 ? item.id : undefined,
+          allowedMethods: [...(item.allowedMethods ?? [])],
           matchType: item.matchType,
           path: item.path.trim(),
+          rateLimitEnabled: item.rateLimitEnabled ?? false,
+          ratePerSecond: item.ratePerSecond ?? 100,
+          rateLimitBurst: item.rateLimitBurst ?? 50,
+          rateLimitNodelay: item.rateLimitNodelay ?? true,
           type: item.type,
         };
         if (item.type === 'proxy') {
@@ -465,6 +493,18 @@ async function onSave() {
           />
         </div>
 
+        <div class="mt-2 flex flex-col gap-2 md:flex-row md:items-center">
+          <span class="w-24 shrink-0 text-xs text-gray-500">允许的 HTTP 方法</span>
+          <Select
+            v-model:value="route.allowedMethods"
+            :options="HTTP_METHOD_OPTIONS"
+            class="w-full md:flex-1"
+            mode="multiple"
+            placeholder="不限制方法"
+          />
+          <span class="text-xs text-gray-400">留空表示允许所有方法</span>
+        </div>
+
         <!-- 代理转发（proxy_pass）：协议 + 上游地址（自适应）+ 超时 同排 -->
         <div v-if="route.type === 'proxy'" class="mt-2 flex flex-col gap-2 md:flex-row md:items-center">
           <Select
@@ -532,6 +572,45 @@ async function onSave() {
             v-model:value="route.returnBody"
             placeholder="返回内容，如 ok / error: not found"
           />
+        </div>
+
+        <!-- 路由级限流：默认关闭，按客户端 IP 在当前节点限速 -->
+        <div class="mt-2 rounded bg-gray-50 p-2 dark:bg-gray-800/60">
+          <div class="flex flex-wrap items-center gap-3">
+            <Tooltip title="按 $binary_remote_addr 限制此 Location 的请求速率；共享区仅在单节点内共享，不是跨节点全局配额。">
+              <span class="text-xs font-medium text-gray-600 dark:text-gray-300">路由限流</span>
+            </Tooltip>
+            <Switch
+              v-model:checked="route.rateLimitEnabled"
+              checked-children="启用"
+              size="small"
+              un-checked-children="关闭"
+            />
+            <template v-if="route.rateLimitEnabled">
+              <InputNumber
+                v-model:value="route.ratePerSecond"
+                :min="1"
+                :max="100_000"
+                :precision="0"
+                addon-after="请求/秒"
+                class="w-40"
+              />
+              <InputNumber
+                v-model:value="route.rateLimitBurst"
+                :min="0"
+                :max="1_000_000"
+                :precision="0"
+                addon-after="突发额度"
+                class="w-40"
+              />
+              <Tooltip title="开启后突发额度内的请求不排队延迟处理">
+                <div class="flex items-center gap-1 text-xs text-gray-500">
+                  <span>突发不延迟</span>
+                  <Switch v-model:checked="route.rateLimitNodelay" size="small" />
+                </div>
+              </Tooltip>
+            </template>
+          </div>
         </div>
 
         <!-- Location 块指令 -->

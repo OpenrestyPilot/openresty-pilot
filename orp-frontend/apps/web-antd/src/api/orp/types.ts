@@ -158,7 +158,17 @@ export interface LocationRule {
   returnCode?: number;
   /** Location 块内部指令 KV 列表 */
   directives?: OrpDirective[];
+  /** 按客户端 IP 限制此路由请求速率（单节点范围） */
+  rateLimitEnabled?: boolean;
+  /** 每秒允许的请求数，启用时为 1–100000 的整数 */
+  ratePerSecond?: number;
+  /** 允许排队的突发请求数，启用时为 0–1000000 的整数 */
+  rateLimitBurst?: number;
+  /** 突发请求是否不延迟处理 */
+  rateLimitNodelay?: boolean;
   id: number;
+  /** 允许的 HTTP 方法；空数组或未设置表示不限制 */
+  allowedMethods?: string[];
   /** 匹配修饰符 */
   matchType?: LocationMatchType;
   /** 匹配路径，如 /api */

@@ -77,6 +77,10 @@ func (s *Server) orpPublishAbort(w http.ResponseWriter, r *http.Request) {
 		orpFailure(w, 500, "提交中止操作失败")
 		return
 	}
+	if err := syncConfigurationCandidatePublishState(r.Context(), s.db, id); err != nil {
+		orpFailure(w, 500, "批次已中止，但同步候选状态失败")
+		return
+	}
 	orpReply(w, 200, map[string]any{"id": id, "phase": "aborted", "abortedCount": count})
 }
 

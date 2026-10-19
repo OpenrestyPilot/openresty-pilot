@@ -18,7 +18,8 @@ export namespace AuthApi {
 
   export interface LoginConfig {
     captchaEnabled: boolean;
-    password: string;
+    /** Only present when an operator explicitly enables local-demo prefill. */
+    password?: string;
     username: string;
   }
 
@@ -35,7 +36,7 @@ export async function loginApi(data: AuthApi.LoginParams) {
   return requestClient.post<AuthApi.LoginResult>('/auth/login', data);
 }
 
-/** 获取由 quickstart .env 提供的登录页默认值和验证码开关。 */
+/** 获取登录页用户名和验证码开关；密码预填默认关闭。 */
 export async function getLoginConfigApi() {
   return requestClient.get<AuthApi.LoginConfig>('/auth/config');
 }

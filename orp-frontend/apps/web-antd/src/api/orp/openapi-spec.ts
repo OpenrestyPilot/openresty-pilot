@@ -6,7 +6,7 @@
  * 便于交给其他智能体直接生成对应后端服务。
  */
 
-const ok = (dataRef: string) => ({
+const ok = (dataRef: string, dataExample?: Record<string, unknown>) => ({
   description: '成功（code=0）',
   content: {
     'application/json': {
@@ -19,6 +19,7 @@ const ok = (dataRef: string) => ({
         },
         required: ['code', 'message', 'data'],
       },
+      ...(dataExample ? { example: { code: 0, message: 'ok', data: dataExample } } : {}),
     },
   },
 });
@@ -72,11 +73,12 @@ export const openApiSpec = {
       '**业务规则**',
       '- 中心：存在任一关联资源（节点/HTTP/Stream/DNS/证书）时禁止删除',
       '- 节点：运行中（running）状态不可直接删除，需先暂停或停止；本地 Docker 节点状态操作会实际启动、暂停或停止容器',
-      '- 发布：本地 Docker east-1/east-2/east-3 支持节点内语法校验、原子切换、reload、版本探针与回滚；生产 SSH 通道尚未配置',
+      '- 发布：本地 Docker east-1/east-2/east-3 与登记的固定非 root Agent 均支持加权批次、Canary 观察期、活动版本探针和历史快照回滚；Agent Canary 与中央回滚通过固定本机 probe/validate/publish 操作执行；批次中断后可通过逐项人工观察 UUID 和服务端固定探针核对，安全继续未开始目标。root-master/helper 发布 profile 和其他节点拓扑仍不支持',
       '- 指标：本地访问日志和节点探测为数据源；配置 ORP_GEOIP_DB_PATH 与中心经纬度后提供真实来源聚合',
       '- HTTP 监听：同中心同端口唯一；关联证书的适用中心范围必须包含该监听所属中心',
       '- Stream 服务：同中心同协议同端口唯一',
       '- 证书：列表接口不下发 privateKey，明文仅通过 detail 接口获取；被 HTTP 监听引用时禁止删除',
+      '- Consumer/API Key：管理接口仅供管理员维护调用方和密钥生命周期；完整密钥只在签发/轮换响应展示一次，当前尚未接入代理请求认证或路由授权',
       '- 审计：所有写操作（新增/更新/删除/下线）自动记录审计日志',
     ].join('\n'),
     version: '1.0.0',
@@ -98,6 +100,7 @@ export const openApiSpec = {
     { name: 'rbac', description: '系统与权限：用户/角色/权限树（企业级 RBAC）' },
     { name: 'publish', description: '配置下发：预检、策略下发、分批进度与金丝雀控制' },
     { name: 'alerts', description: '告警通知：Webhook / 飞书通道与 TLS 证书到期提醒' },
+    { name: 'api-gateway', description: 'API 网关：Consumer/App 与 API Key 管理（当前为管理面生命周期）' },
     { name: 'agent', description: '节点 Agent：仅在独立 mTLS listener 上提供心跳和固定操作任务' },
   ],
   paths: {
@@ -138,7 +141,7 @@ export const openApiSpec = {
           { name: 'roleId', in: 'query', schema: { type: 'integer' } },
           { name: 'status', in: 'query', schema: { type: 'string', enum: ['enabled', 'disabled'] } },
         ],
-        responses: { '200': { description: 'PageResult<RbacUserItem>' } },
+        responses: { '200': ok('#/components/schemas/RbacUserPage') },
       },
       post: {
         tags: ['rbac'],
@@ -148,7 +151,7 @@ export const openApiSpec = {
           content: { 'application/json': { schema: { type: 'object' } } },
           description: 'username/realName/roleIds/status/password/email/phone',
         },
-        responses: { '200': { description: 'RbacUserItem' } },
+        responses: { '201': ok('#/components/schemas/RbacUserCreated') },
       },
     },
     '/orp/rbac/users/{id}': {
@@ -157,14 +160,14 @@ export const openApiSpec = {
         summary: '编辑用户（含角色绑定与状态）',
         operationId: 'updateRbacUser',
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
-        responses: { '200': { description: 'RbacUserItem' } },
+        responses: { '200': ok('#/components/schemas/RbacUserUpdated') },
       },
       delete: {
         tags: ['rbac'],
         summary: '删除用户（自身账号受保护）',
         operationId: 'deleteRbacUser',
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
-        responses: { '200': { description: '成功' } },
+        responses: { '200': ok('#/components/schemas/NullData') },
       },
     },
     '/orp/rbac/users/{id}/reset-password': {
@@ -173,7 +176,7 @@ export const openApiSpec = {
         summary: '重置用户密码为初始密码',
         operationId: 'resetRbacUserPassword',
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
-        responses: { '200': { description: '{ resetTo, username }' } },
+        responses: { '200': ok('#/components/schemas/RbacPasswordReset') },
       },
     },
     '/orp/rbac/roles': {
@@ -187,7 +190,7 @@ export const openApiSpec = {
           { name: 'keyword', in: 'query', schema: { type: 'string' } },
           { name: 'status', in: 'query', schema: { type: 'string' } },
         ],
-        responses: { '200': { description: 'PageResult<RbacRoleItem>' } },
+        responses: { '200': ok('#/components/schemas/RbacRolePage') },
       },
       post: {
         tags: ['rbac'],
@@ -197,7 +200,7 @@ export const openApiSpec = {
           content: { 'application/json': { schema: { type: 'object' } } },
           description: 'code/name/description/status/permissionKeys/centerIds；centerIds 使用 * 表示全部中心',
         },
-        responses: { '200': { description: 'RbacRoleItem' } },
+        responses: { '201': ok('#/components/schemas/RbacRoleCreated') },
       },
     },
     '/orp/rbac/roles/{id}': {
@@ -210,14 +213,14 @@ export const openApiSpec = {
           content: { 'application/json': { schema: { type: 'object' } } },
           description: 'name/description/status/permissionKeys/centerIds',
         },
-        responses: { '200': { description: 'RbacRoleItem' } },
+        responses: { '200': ok('#/components/schemas/RbacRoleUpdated') },
       },
       delete: {
         tags: ['rbac'],
         summary: '删除角色（内置/绑定用户时禁止）',
         operationId: 'deleteRbacRole',
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
-        responses: { '200': { description: '成功' } },
+        responses: { '200': ok('#/components/schemas/NullData') },
       },
     },
     '/orp/rbac/permissions': {
@@ -225,7 +228,7 @@ export const openApiSpec = {
         tags: ['rbac'],
         summary: '可分配的全局权限项',
         operationId: 'listRbacPermissions',
-        responses: { '200': { description: 'RbacPermissionNode[]' } },
+        responses: { '200': ok('#/components/schemas/RbacPermissionNodeList') },
       },
     },
     '/orp/rbac/roles/{id}/permissions': {
@@ -234,7 +237,7 @@ export const openApiSpec = {
         summary: '读取角色权限集合',
         operationId: 'getRbacRolePermissions',
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
-        responses: { '200': { description: '{ permissionKeys }' } },
+        responses: { '200': ok('#/components/schemas/RbacPermissionKeys') },
       },
       put: {
         tags: ['rbac'],
@@ -245,7 +248,7 @@ export const openApiSpec = {
           content: { 'application/json': { schema: { type: 'object' } } },
           description: 'permissionKeys: string[]',
         },
-        responses: { '200': { description: '{ permissionKeys }' } },
+        responses: { '200': ok('#/components/schemas/RbacPermissionKeys') },
       },
     },
     '/orp/publish': {
@@ -257,7 +260,72 @@ export const openApiSpec = {
           content: { 'application/json': { schema: { type: 'object' } } },
           description: 'nodeIds: number[]；strategy: { mode: all|weighted, batchCount: 1-5, canary: { enabled, waitSeconds: 10|30|60|300 } }',
         },
-        responses: { '200': { description: '{ batchId, total }' } },
+        responses: { '200': ok('#/components/schemas/PublishCreated') },
+      },
+    },
+    '/orp/candidates': {
+      get: {
+        tags: ['publish'],
+        summary: '分页查询配置候选',
+        operationId: 'listConfigurationCandidates',
+        parameters: [
+          ...pageParams,
+          { name: 'centerId', in: 'query', schema: { type: 'integer', minimum: 1 }, description: '按中心筛选' },
+          { name: 'archived', in: 'query', schema: { type: 'boolean', default: false }, description: '设为 true 时仅列出已归档候选' },
+        ],
+        responses: { '200': ok('#/components/schemas/ConfigurationCandidatePage'), '403': bad('缺少配置读取权限', 403) },
+      },
+      post: {
+        tags: ['publish'],
+        summary: '创建不可变配置候选并排队校验',
+        operationId: 'createConfigurationCandidate',
+        description: '在 REPEATABLE READ 事务中冻结配置、目标节点、首个校验尝试、每节点发布基线与语义/文本 Diff 及审计记录。concurrency 不能超过中心 maxInflight。publishOnValidationSuccess 缺省 false；启用后只有最新尝试 completed 且所有冻结目标 passed 才自动创建发布批次。',
+        requestBody: jsonBody('#/components/schemas/ConfigurationCandidatePayload', { centerId: 1, nodeIds: [11, 12], concurrency: 2, publishOnValidationSuccess: false }),
+        responses: { '201': ok('#/components/schemas/ConfigurationCandidateCreated'), '400': bad('中心、目标节点或并发值无效，或超过中心上限'), '403': bad('缺少中心配置写入权限', 403), '409': bad('配置快照或节点目标无法安全创建', 409) },
+      },
+    },
+    '/orp/validation-centers/{centerId}/policy': {
+      get: {
+        tags: ['publish'], summary: '读取中心校验并发策略', operationId: 'getValidationCenterPolicy',
+        parameters: [{ name: 'centerId', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } }],
+        responses: { '200': ok('#/components/schemas/ValidationCenterPolicy'), '403': bad('无权读取该中心策略', 403), '404': bad('中心不存在', 404) },
+      },
+      put: {
+        tags: ['publish'], summary: '更新中心校验并发上限', operationId: 'updateValidationCenterPolicy',
+        parameters: [{ name: 'centerId', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } }],
+        requestBody: jsonBody('#/components/schemas/ValidationCenterPolicyPayload', { maxInflight: 4 }),
+        description: 'maxInflight 范围为 1 到 32。降低上限后不会取消已运行任务，但调度器会暂停新派发直至活动数低于上限；变更具有中心写入权限并记录审计。',
+        responses: { '200': ok('#/components/schemas/ValidationCenterPolicy'), '400': bad('maxInflight 须为 1 到 32'), '403': bad('无权修改该中心策略', 403), '404': bad('中心不存在', 404) },
+      },
+    },
+    '/orp/candidates/{id}': {
+      get: {
+        tags: ['publish'],
+        summary: '查询候选、校验尝试与节点结果',
+        operationId: 'getConfigurationCandidate',
+        description: '仅具有该中心 orp:config:write 权限的响应会包含冻结的文本配置 Diff；仅有 orp:read 的响应不返回 Diff 内容。',
+        parameters: [idParam],
+        responses: { '200': ok('#/components/schemas/ConfigurationCandidateDetail'), '403': bad('无权读取该中心候选', 403), '404': bad('候选不存在', 404) },
+      },
+    },
+    '/orp/candidates/{id}/publish': {
+      post: {
+        tags: ['publish'], summary: '从校验通过的不可变候选创建发布批次', operationId: 'publishValidatedConfigurationCandidate',
+        parameters: [idParam],
+        description: '只允许最新校验尝试已完成且所有冻结目标均通过的候选。服务端会重新核验发布权限、快照摘要、目标集合与发布基线；冲突时不创建批次。自动发布意图失败或结果未知时不会由此接口隐式重试，操作员可显式确认调用本接口。',
+        requestBody: { required: false, content: { 'application/json': { schema: { $ref: '#/components/schemas/ConfigurationCandidatePublishPayload' }, example: { strategy: { mode: 'weighted', batchCount: 2, canary: { enabled: true, waitSeconds: 30 } } } } } },
+        responses: { '200': ok('#/components/schemas/ConfigurationCandidatePublishResult'), '400': bad('发布策略无效'), '403': bad('缺少当前中心发布权限', 403), '404': bad('候选不存在', 404), '409': bad('校验未全部通过或候选、目标、基线已变化', 409) },
+      },
+    },
+    '/orp/candidates/{id}/{action}': {
+      post: {
+        tags: ['publish'],
+        summary: '管理候选校验尝试或归档状态',
+        operationId: 'actOnConfigurationCandidate',
+        parameters: [idParam, { name: 'action', in: 'path', required: true, schema: { type: 'string', enum: ['archive', 'restore', 'retry', 'continue', 'stop'] } }],
+        description: 'retry 需要传入 nodeId；只允许重试失败或结果未知的候选目标节点。',
+        requestBody: { required: false, content: { 'application/json': { schema: { type: 'object', properties: { nodeId: { type: 'integer', minimum: 1 } } }, example: { nodeId: 12 } } } },
+        responses: { '200': ok('#/components/schemas/ConfigurationCandidateActionResult'), '403': bad('缺少中心配置写入权限', 403), '404': bad('候选或操作不存在', 404), '409': bad('当前候选状态不允许该操作', 409) },
       },
     },
     '/orp/publish/batches/{id}': {
@@ -266,7 +334,25 @@ export const openApiSpec = {
         summary: '查询下发批次实时进度（含 batchGroups/canary 倒计时）',
         operationId: 'getPublishBatch',
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
-        responses: { '200': { description: 'PublishBatch' } },
+        responses: { '200': ok('#/components/schemas/PublishBatch', {
+          id: 901,
+          operator: 'admin',
+          mode: 'weighted',
+          phase: 'recovery_required',
+          createdAt: 1792032000000,
+          currentBatchIndex: 0,
+          totalBatches: 2,
+          batchGroups: [{ index: 0, nodeIds: [12], weightSum: 10, status: 'failed' }],
+          canary: { enabled: true, remaining: null, waitSeconds: 30 },
+          done: true,
+          items: [
+            { itemId: 42, requiresReconciliation: true, nodeId: 12, nodeName: 'edge-a', centerId: 1, centerName: 'prod', batchIndex: 0, weight: 10, status: 'failed', error: '控制面重启后无法确认候选已加载；请重新预检', startedAt: '2026-10-15T08:00:00Z', finishedAt: '2026-10-15T08:00:10Z' },
+            { itemId: 43, requiresReconciliation: true, nodeId: 13, nodeName: 'edge-b', centerId: 1, centerName: 'prod', batchIndex: 1, weight: 10, status: 'aborted', error: '控制面重启，尚未开始的下发已停止', startedAt: null, finishedAt: '2026-10-15T08:00:10Z' },
+          ],
+          successCount: 0,
+          failCount: 1,
+          abortedCount: 1,
+        }) },
       },
     },
     '/orp/publish/batches/{id}/abort': {
@@ -275,7 +361,7 @@ export const openApiSpec = {
         summary: '中止下发（金丝雀观察期内取消后续批次）',
         operationId: 'abortPublishBatch',
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
-        responses: { '200': { description: '{ id, phase, abortedCount }' } },
+        responses: { '200': ok('#/components/schemas/PublishBatchAborted') },
       },
     },
     '/orp/publish/batches/{id}/advance': {
@@ -284,7 +370,16 @@ export const openApiSpec = {
         summary: '立即推进（跳过金丝雀观察等待期）',
         operationId: 'advancePublishBatch',
         parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer' } }],
-        responses: { '200': { description: '{ id, phase }' } },
+        responses: { '200': ok('#/components/schemas/PublishBatchAdvanced') },
+      },
+    },
+    '/orp/publish/batches/{id}/reconcile-continue': {
+      post: {
+        tags: ['publish'], summary: '人工核对中断批次后继续未开始节点', operationId: 'reconcileAndContinuePublishBatch',
+        parameters: [{ name: 'id', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } }],
+        description: '批次必须处于 recovery_required。操作员须为全部待核对项提交现场观察到的 release UUID；服务端对每个节点执行固定版本探针，只将确认已生效的项记成功，只恢复仍处于冻结基线的未开始项，不重放已开始的失败任务。',
+        requestBody: jsonBody('#/components/schemas/PublishRecoveryContinuePayload', { confirmations: [{ itemId: 42, observedReleaseUuid: 'd6eeea1b-376a-4357-a7c0-ae8e31e25bf7' }] }),
+        responses: { '200': ok('#/components/schemas/PublishRecoveryContinueResult'), '400': bad('人工核对清单无效或不完整'), '403': bad('无权操作该批次', 403), '404': bad('批次不存在', 404), '409': bad('批次状态、冻结候选或节点版本核对不满足要求', 409), '500': bad('恢复状态持久化或审计失败', 500) },
       },
     },
     '/orp/centers': {
@@ -443,14 +538,14 @@ export const openApiSpec = {
         tags: ['nodes'], summary: '登记或撤销节点 Agent 客户端证书', operationId: 'registerNodeAgentCertificate', parameters: [idParam],
         description: '需要节点运维权限。登记 Agent ID 和客户端叶证书 SHA-256 指纹；发送 revoke=true 可撤销当前指纹并使未完成任务失效。证书签发由运维侧完成。',
         requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['nodeId'], properties: { nodeId: { type: 'string' }, certificateFingerprint: { type: 'string', pattern: '^[a-fA-F0-9]{64}$' }, revoke: { type: 'boolean' } } }, example: { nodeId: 'edge-sh-01', certificateFingerprint: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' } } } },
-        responses: { '200': { description: '证书绑定状态' }, '403': bad('缺少节点运维权限', 403), '409': bad('Agent ID 或证书指纹冲突', 409) },
+        responses: { '200': ok('#/components/schemas/AgentCertificateRegistration'), '403': bad('缺少节点运维权限', 403), '409': bad('Agent ID 或证书指纹冲突', 409) },
       },
     },
     '/orp/nodes/{id}/agent/reload': {
-      post: { tags: ['nodes'], summary: '向在线 Agent 节点派发固定 reload', operationId: 'queueNodeAgentReload', parameters: [idParam], description: '需要节点运维权限；只允许固定 reload 操作，任务有效期两分钟。', responses: { '201': { description: '已排队任务 ID' }, '403': bad('缺少节点运维权限', 403), '409': bad('Agent 未登记、离线或已有未完成任务', 409) } },
+      post: { tags: ['nodes'], summary: '向在线 Agent 节点派发固定 reload', operationId: 'queueNodeAgentReload', parameters: [idParam], description: '需要节点运维权限；只允许固定 reload 操作，任务有效期两分钟。', responses: { '201': ok('#/components/schemas/AgentTaskQueued'), '403': bad('缺少节点运维权限', 403), '409': bad('Agent 未登记、离线或已有未完成任务', 409) } },
     },
     '/orp/nodes/{id}/agent/tasks': {
-      get: { tags: ['nodes'], summary: '查询节点 Agent 最近任务', operationId: 'listNodeAgentTasks', parameters: [idParam], description: '需要查看平台配置权限；最多返回最近 50 个任务及结果。', responses: { '200': { description: 'Agent 任务列表' }, '403': bad('缺少查看平台配置权限', 403) } },
+      get: { tags: ['nodes'], summary: '查询节点 Agent 最近任务', operationId: 'listNodeAgentTasks', parameters: [idParam], description: '需要查看平台配置权限；最多返回最近 50 个任务及结果。', responses: { '200': ok('#/components/schemas/AgentTaskPage'), '403': bad('缺少查看平台配置权限', 403) } },
     },
     '/orp/nodes/{id}/metrics': {
       get: {
@@ -462,6 +557,21 @@ export const openApiSpec = {
         responses: {
           '200': ok('#/components/schemas/NodeMetricsWrap'),
           '404': bad('节点不存在或已被删除', 404),
+        },
+      },
+    },
+    '/orp/nodes/{id}/metrics/events': {
+      get: {
+        tags: ['nodes'],
+        summary: '实时推送节点运行指标',
+        description: '立即发送一帧节点指标，之后每秒发送一次；连接关闭时停止采集。',
+        operationId: 'streamNodeMetricEvents',
+        parameters: [idParam],
+        responses: {
+          '200': { description: 'text/event-stream，metrics 事件携带节点与指标快照', content: { 'text/event-stream': { schema: { type: 'string' } } } },
+          '401': bad('登录状态已失效', 401),
+          '403': bad('当前账号无权访问该节点', 403),
+          '404': bad('节点不存在', 404),
         },
       },
     },
@@ -682,7 +792,7 @@ export const openApiSpec = {
         operationId: 'getCertificatePublicDetail',
         parameters: [idParam],
         responses: {
-          '200': { description: '{ certificate, certificateChain }' },
+          '200': ok('#/components/schemas/CertificatePublicDetail'),
           '404': bad('证书不存在或已被删除', 404),
         },
       },
@@ -893,7 +1003,7 @@ export const openApiSpec = {
           { name: 'range', in: 'query', schema: { $ref: '#/components/schemas/DashboardRange' }, description: '统计时间范围' },
         ],
         responses: {
-          '200': { description: 'text/event-stream，事件名 dashboard，data 为指标、趋势与排行 JSON 快照' },
+          '200': { description: 'text/event-stream，事件名 dashboard，data 为指标、趋势与排行 JSON 快照', content: { 'text/event-stream': { schema: { type: 'string', description: 'SSE 帧；dashboard 事件 data 是 JSON 快照' } } } },
           '401': bad('登录状态已失效', 401),
         },
       },
@@ -945,7 +1055,7 @@ export const openApiSpec = {
         summary: '查询节点探活延迟历史',
         operationId: 'getNodeLatencyHistory',
         parameters: [{ ...idParam }, { name: 'limit', in: 'query', schema: { type: 'integer', minimum: 1, maximum: 500 } }],
-        responses: { '200': { description: '延迟采样和统计摘要' } },
+        responses: { '200': ok('#/components/schemas/NodeLatencyHistory') },
       },
     },
     '/orp/certificates/stats': {
@@ -953,58 +1063,58 @@ export const openApiSpec = {
         tags: ['tls'],
         summary: '证书统计与到期概览',
         operationId: 'getCertificateStats',
-        responses: { '200': { description: '证书总数、有效数和到期数量' } },
+        responses: { '200': ok('#/components/schemas/CertificateStats') },
       },
     },
     '/orp/settings/groups': {
-      get: { tags: ['settings'], summary: '查询配置分组名称', operationId: 'listSettingGroupNames', responses: { '200': { description: '配置分组列表' } } },
+      get: { tags: ['settings'], summary: '查询配置分组名称', operationId: 'listSettingGroupNames', responses: { '200': ok('#/components/schemas/StringList') } },
     },
     '/orp/settings/{id}/plain': {
-      get: { tags: ['settings'], summary: '授权读取敏感配置明文', operationId: 'getSettingPlain', parameters: [idParam], responses: { '200': { description: '配置明文，仅有读取权限时返回' }, '403': bad('无明文读取权限', 403) } },
+      get: { tags: ['settings'], summary: '授权读取敏感配置明文', operationId: 'getSettingPlain', parameters: [idParam], responses: { '200': ok('#/components/schemas/SettingResource'), '403': bad('无明文读取权限', 403) } },
     },
     '/orp/settings/{id}/status': {
-      put: { tags: ['settings'], summary: '启用或停用配置项', operationId: 'updateSettingStatus', parameters: [idParam], responses: { '200': { description: '更新后的配置项' } } },
+      put: { tags: ['settings'], summary: '启用或停用配置项', operationId: 'updateSettingStatus', parameters: [idParam], responses: { '200': ok('#/components/schemas/SettingResource') } },
     },
     '/orp/settings/batch-move': {
-      post: { tags: ['settings'], summary: '批量移动配置项分组', operationId: 'batchMoveSettings', responses: { '200': { description: '移动结果' } } },
+      post: { tags: ['settings'], summary: '批量移动配置项分组', operationId: 'batchMoveSettings', responses: { '200': ok('#/components/schemas/SettingBatchMoveResult') } },
     },
     '/orp/setting-groups': {
-      get: { tags: ['settings'], summary: '查询配置分组', operationId: 'listSettingGroups', responses: { '200': { description: '配置分组列表' } } },
-      post: { tags: ['settings'], summary: '新增配置分组', operationId: 'createSettingGroup', responses: { '200': { description: '新建分组' } } },
+      get: { tags: ['settings'], summary: '查询配置分组', operationId: 'listSettingGroups', responses: { '200': ok('#/components/schemas/SettingGroupList') } },
+      post: { tags: ['settings'], summary: '新增配置分组', operationId: 'createSettingGroup', responses: { '201': ok('#/components/schemas/SettingGroup') } },
     },
     '/orp/setting-groups/{id}': {
-      put: { tags: ['settings'], summary: '编辑配置分组', operationId: 'updateSettingGroup', parameters: [idParam], responses: { '200': { description: '更新后的分组' } } },
+      put: { tags: ['settings'], summary: '编辑配置分组', operationId: 'updateSettingGroup', parameters: [idParam], responses: { '200': ok('#/components/schemas/SettingGroup') } },
       delete: { tags: ['settings'], summary: '删除配置分组', operationId: 'deleteSettingGroup', parameters: [idParam], responses: { '200': ok('#/components/schemas/NullData') } },
     },
     '/orp/setting-groups/reorder': {
-      put: { tags: ['settings'], summary: '调整配置分组顺序', operationId: 'reorderSettingGroups', responses: { '200': { description: '更新后的分组顺序' } } },
+      put: { tags: ['settings'], summary: '调整配置分组顺序', operationId: 'reorderSettingGroups', responses: { '200': ok('#/components/schemas/SettingGroupList') } },
     },
     '/orp/http-directives': {
-      get: { tags: ['http'], summary: '读取 HTTP 全局指令', operationId: 'getHttpDirectives', responses: { '200': { description: 'HTTP 指令集合' } } },
-      put: { tags: ['http'], summary: '更新 HTTP 全局指令', operationId: 'putHttpDirectives', responses: { '200': { description: '更新结果' } } },
+      get: { tags: ['http'], summary: '读取 HTTP 全局指令', operationId: 'getHttpDirectives', responses: { '200': ok('#/components/schemas/DirectiveList') } },
+      put: { tags: ['http'], summary: '更新 HTTP 全局指令', operationId: 'putHttpDirectives', responses: { '200': ok('#/components/schemas/DirectiveList') } },
     },
     '/orp/stream-directives': {
-      get: { tags: ['stream'], summary: '读取 Stream 全局指令', operationId: 'getStreamDirectives', responses: { '200': { description: 'Stream 指令集合' } } },
-      put: { tags: ['stream'], summary: '更新 Stream 全局指令', operationId: 'putStreamDirectives', responses: { '200': { description: '更新结果' } } },
+      get: { tags: ['stream'], summary: '读取 Stream 全局指令', operationId: 'getStreamDirectives', responses: { '200': ok('#/components/schemas/DirectiveList') } },
+      put: { tags: ['stream'], summary: '更新 Stream 全局指令', operationId: 'putStreamDirectives', responses: { '200': ok('#/components/schemas/DirectiveList') } },
     },
     '/orp/http-log-format': {
-      get: { tags: ['http'], summary: '读取 HTTP 访问日志格式', operationId: 'getHttpLogFormat', responses: { '200': { description: 'HTTP 日志格式' } } },
-      put: { tags: ['http'], summary: '更新 HTTP 访问日志格式', operationId: 'putHttpLogFormat', responses: { '200': { description: '更新结果' } } },
+      get: { tags: ['http'], summary: '读取 HTTP 访问日志格式', operationId: 'getHttpLogFormat', responses: { '200': ok('#/components/schemas/LogFormat') } },
+      put: { tags: ['http'], summary: '更新 HTTP 访问日志格式', operationId: 'putHttpLogFormat', responses: { '200': ok('#/components/schemas/LogFormat') } },
     },
     '/orp/http-error-pages': {
-      get: { tags: ['http'], summary: '读取 HTTP 全局错误页面', operationId: 'getHttpErrorPages', responses: { '200': { description: '状态码或状态码|Content-Type 到页面文本的映射' } } },
+      get: { tags: ['http'], summary: '读取 HTTP 全局错误页面', operationId: 'getHttpErrorPages', responses: { '200': ok('#/components/schemas/ErrorPageMap') } },
       put: {
         tags: ['http'], summary: '更新 HTTP 全局错误页面', operationId: 'putHttpErrorPages',
         requestBody: {
           required: true,
           content: { 'application/json': { schema: { type: 'object', required: ['errorPages'], properties: { errorPages: { type: 'object', additionalProperties: { type: 'string' }, description: '支持 400–599 状态码；内容限制 1 MB' } } }, example: { errorPages: { '404': '<h1>Not found</h1>', '404|application/json': '{"error":"not found"}' } } } },
         },
-        responses: { '200': { description: '更新后的错误页面映射' }, '400': bad('错误页面配置无效') },
+        responses: { '200': ok('#/components/schemas/ErrorPageMap'), '400': bad('错误页面配置无效') },
       },
     },
     '/orp/stream-log-format': {
-      get: { tags: ['stream'], summary: '读取 Stream 访问日志格式', operationId: 'getStreamLogFormat', responses: { '200': { description: 'Stream 日志格式' } } },
-      put: { tags: ['stream'], summary: '更新 Stream 访问日志格式', operationId: 'putStreamLogFormat', responses: { '200': { description: '更新结果' } } },
+      get: { tags: ['stream'], summary: '读取 Stream 访问日志格式', operationId: 'getStreamLogFormat', responses: { '200': ok('#/components/schemas/LogFormat') } },
+      put: { tags: ['stream'], summary: '更新 Stream 访问日志格式', operationId: 'putStreamLogFormat', responses: { '200': ok('#/components/schemas/LogFormat') } },
     },
     '/orp/logs': {
       get: {
@@ -1012,7 +1122,7 @@ export const openApiSpec = {
         summary: '读取本地节点或服务日志',
         operationId: 'getLogs',
         parameters: [{ name: 'target', in: 'query', required: true, schema: { type: 'string', example: 'node:11' } }],
-        responses: { '200': { description: '日志行列表' }, '400': bad('日志目标无效') },
+        responses: { '200': ok('#/components/schemas/LogLineList'), '400': bad('日志目标无效') },
       },
     },
     '/orp/logs/events': {
@@ -1025,36 +1135,97 @@ export const openApiSpec = {
       },
     },
     '/orp/publish/precheck': {
-      post: { tags: ['publish'], summary: '冻结候选并在目标节点运行 nginx -t', operationId: 'precheckPublish', responses: { '200': { description: '逐节点预检结果与配置 Diff' } } },
+      post: { tags: ['publish'], summary: '冻结候选并在目标节点运行 nginx -t', operationId: 'precheckPublish', responses: { '200': ok('#/components/schemas/PublishPrecheckResult') } },
     },
     '/orp/publish/summary': {
-      get: { tags: ['publish'], summary: '查询待下发配置汇总', operationId: 'getPublishSummary', responses: { '200': { description: '按中心及节点分组的待发布摘要' } } },
+      get: { tags: ['publish'], summary: '查询待下发配置汇总', operationId: 'getPublishSummary', responses: { '200': ok('#/components/schemas/PublishSummary') } },
     },
     '/orp/publish/diff': {
-      get: { tags: ['publish'], summary: '查询节点期望配置与已发布配置差异', operationId: 'getPublishDiff', parameters: [{ name: 'nodeId', in: 'query', required: true, schema: { type: 'integer' } }], responses: { '200': { description: '语义和文本 Diff' } } },
+      get: { tags: ['publish'], summary: '查询节点期望配置与已发布配置差异', operationId: 'getPublishDiff', parameters: [{ name: 'nodeId', in: 'query', required: true, schema: { type: 'integer' } }], responses: { '200': ok('#/components/schemas/PublishDiff') } },
     },
     '/orp/publish/history': {
-      get: { tags: ['publish'], summary: '分页查询发布历史', operationId: 'listPublishHistory', parameters: [...pageParams, { name: 'centerId', in: 'query', schema: { type: 'integer' } }, { name: 'nodeId', in: 'query', schema: { type: 'integer' } }], responses: { '200': { description: '发布历史列表' } } },
+      get: { tags: ['publish'], summary: '分页查询发布历史', operationId: 'listPublishHistory', parameters: [...pageParams, { name: 'centerId', in: 'query', schema: { type: 'integer' } }, { name: 'nodeId', in: 'query', schema: { type: 'integer' } }], responses: { '200': ok('#/components/schemas/PublishHistoryPage') } },
     },
     '/orp/publish/history/stats': {
-      get: { tags: ['publish'], summary: '查询发布历史统计', operationId: 'getPublishHistoryStats', responses: { '200': { description: '成功率和变更排行' } } },
+      get: { tags: ['publish'], summary: '查询发布历史统计', operationId: 'getPublishHistoryStats', responses: { '200': ok('#/components/schemas/PublishHistoryStats') } },
     },
     '/orp/publish/rollback': {
-      post: { tags: ['publish'], summary: '从发布历史快照执行回滚', operationId: 'rollbackPublish', responses: { '200': { description: '回滚批次信息' } } },
+      post: { tags: ['publish'], summary: '从成功发布历史快照创建并执行回滚批次', operationId: 'rollbackPublish', description: '只接受已成功发布的历史记录 ID。服务端从中央冻结快照生成新的 release UUID，核对节点当前活动版本，再运行固定目标的 validate 与 publish；Agent 节点使用固定非 root profile 的 probe/validate/publish 任务。客户端不能提供任意版本、命令、路径或配置制品。', responses: { '200': ok('#/components/schemas/PublishRollbackResult'), '403': { description: '无权操作该中心' }, '409': { description: '节点状态、活动版本探针或回滚预检不满足要求' } } },
     },
     '/orp/alert-channels': {
-      get: { tags: ['alerts'], summary: '查询告警推送通道', operationId: 'listAlertChannels', responses: { '200': { description: '通道列表（地址脱敏，密钥不下发）' } } },
+      get: { tags: ['alerts'], summary: '查询告警推送通道', operationId: 'listAlertChannels', responses: { '200': ok('#/components/schemas/AlertChannelList') } },
       post: {
         tags: ['alerts'], summary: '创建 Webhook 或飞书机器人通道', operationId: 'createAlertChannel',
         requestBody: jsonBody('#/components/schemas/AlertChannelPayload', { name: '运维告警群', type: 'webhook', webhookUrl: 'https://example.com/webhook', secret: '可选签名密钥', enabled: true }),
-        responses: { '201': { description: '已创建的通道（地址脱敏）' }, '400': bad('通道类型、地址或名称无效') },
+        responses: { '201': ok('#/components/schemas/AlertChannel'), '400': bad('通道类型、地址或名称无效') },
+      },
+    },
+    '/orp/consumers': {
+      get: {
+        tags: ['api-gateway'], summary: '分页查询 API 调用方及有效密钥数', operationId: 'listAPIConsumers',
+        parameters: pageParams,
+        responses: { '200': ok('#/components/schemas/APIConsumerPage'), '401': bad('登录状态已失效', 401), '403': bad('缺少系统运维管理权限', 403) },
+      },
+      post: {
+        tags: ['api-gateway'], summary: '创建 API 调用方', operationId: 'createAPIConsumer',
+        requestBody: jsonBody('#/components/schemas/APIConsumerPayload', { name: '订单服务', description: '订单 API 调用方', status: 'enabled' }),
+        responses: { '201': ok('#/components/schemas/APIConsumer'), '400': bad('调用方名称、描述或状态无效'), '409': bad('调用方名称已存在', 409), '403': bad('缺少系统运维管理权限', 403) },
+      },
+    },
+    '/orp/consumers/{id}': {
+      get: {
+        tags: ['api-gateway'], summary: '读取 API 调用方', operationId: 'getAPIConsumer', parameters: [idParam],
+        responses: { '200': ok('#/components/schemas/APIConsumer'), '404': bad('调用方不存在', 404), '403': bad('缺少系统运维管理权限', 403) },
+      },
+      put: {
+        tags: ['api-gateway'], summary: '更新 API 调用方', operationId: 'updateAPIConsumer', parameters: [idParam],
+        requestBody: jsonBody('#/components/schemas/APIConsumerPayload', { name: '订单服务', description: '订单 API 调用方', status: 'enabled' }),
+        responses: { '200': ok('#/components/schemas/APIConsumer'), '400': bad('调用方名称、描述或状态无效'), '404': bad('调用方不存在', 404), '409': bad('调用方名称已存在', 409), '403': bad('缺少系统运维管理权限', 403) },
+      },
+      delete: {
+        tags: ['api-gateway'], summary: '停用 API 调用方并撤销其有效密钥', operationId: 'disableAPIConsumer', parameters: [idParam],
+        responses: { '200': ok('#/components/schemas/APIConsumer'), '404': bad('调用方不存在', 404), '403': bad('缺少系统运维管理权限', 403) },
+      },
+    },
+    '/orp/consumers/{id}/keys': {
+      get: {
+        tags: ['api-gateway'], summary: '分页查询调用方密钥元数据', operationId: 'listAPIConsumerKeys', parameters: [idParam, ...pageParams],
+        responses: { '200': ok('#/components/schemas/APIKeyPage'), '404': bad('调用方不存在', 404), '403': bad('缺少系统运维管理权限', 403) },
+      },
+      post: {
+        tags: ['api-gateway'], summary: '为调用方签发 API Key', operationId: 'issueAPIConsumerKey', parameters: [idParam],
+        description: '完整密钥仅此响应展示一次；服务端只保存 SHA-256 哈希。响应设置 Cache-Control: no-store。expiresAt 可省略，若提供必须为未来 RFC3339 时间。',
+        requestBody: jsonBody('#/components/schemas/APIKeyIssuePayload', { expiresAt: '2027-01-01T00:00:00Z' }),
+        responses: { '201': ok('#/components/schemas/APIKeyIssueResult'), '400': bad('过期时间格式错误或不是未来时间'), '404': bad('调用方不存在', 404), '409': bad('调用方已停用', 409), '403': bad('缺少系统运维管理权限', 403) },
+      },
+    },
+    '/orp/consumers/{id}/keys/{keyID}/rotate': {
+      post: {
+        tags: ['api-gateway'], summary: '轮换 API Key（签发替代密钥）', operationId: 'rotateAPIConsumerKey',
+        parameters: [idParam, { name: 'keyID', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } }],
+        description: '签发新密钥并记录 rotatedFromId；旧密钥保持有效，便于无中断切换，需在调用方确认切换后另行撤销。完整密钥仅此响应展示一次，响应设置 Cache-Control: no-store。',
+        requestBody: jsonBody('#/components/schemas/APIKeyIssuePayload', { expiresAt: '2027-01-01T00:00:00Z' }),
+        responses: { '201': ok('#/components/schemas/APIKeyIssueResult'), '400': bad('过期时间格式错误或不是未来时间'), '404': bad('调用方或待轮换密钥不存在', 404), '409': bad('调用方已停用或密钥已撤销', 409), '403': bad('缺少系统运维管理权限', 403) },
+      },
+    },
+    '/orp/consumers/{id}/keys/{keyID}': {
+      delete: {
+        tags: ['api-gateway'], summary: '撤销 API Key', operationId: 'revokeAPIConsumerKey',
+        parameters: [idParam, { name: 'keyID', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } }],
+        responses: { '200': ok('#/components/schemas/APIKey'), '404': bad('密钥不存在', 404), '403': bad('缺少系统运维管理权限', 403) },
       },
     },
     '/agent/v1/heartbeat': {
       post: { tags: ['agent'], summary: 'Agent 上报心跳', operationId: 'agentHeartbeat', security: [], description: '仅可通过独立 mTLS listener 调用；客户端证书指纹必须绑定到请求中的 nodeId。', requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['nodeId', 'state'], properties: { nodeId: { type: 'string' }, state: { type: 'object' } } } } } }, responses: { '204': { description: '心跳已保存' }, '401': { description: '证书未登记或节点 ID 不匹配' } } },
     },
     '/agent/v1/tasks/next': {
-      get: { tags: ['agent'], summary: 'Agent 领取一个固定操作任务', operationId: 'agentNextTask', security: [], description: '仅可通过独立 mTLS listener 调用。无任务返回 204；当前仅支持 reload。', parameters: [{ name: 'nodeId', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: '固定 reload 任务' }, '204': { description: '暂无任务' } } },
+      get: { tags: ['agent'], summary: 'Agent 领取一个固定操作任务', operationId: 'agentNextTask', security: [], description: '仅可通过独立 mTLS listener 调用。无任务返回 204；当前仅支持 reload。', parameters: [{ name: 'nodeId', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': { description: '固定 reload 任务', content: { 'application/json': { schema: { $ref: '#/components/schemas/AgentReloadTask' } } } }, '204': { description: '暂无任务' } } },
+    },
+    '/agent/v1/publish/tasks/next': {
+      get: { tags: ['agent'], summary: 'Agent 领取 reload、候选校验、发布或版本核对任务', operationId: 'agentPublishNextTask', security: [], description: '仅可通过独立 HTTPS Agent listener 调用，并使用已登记的 mTLS 证书或节点 Token。候选操作只在冻结候选明确包含当前节点时返回；无任务返回 204。validate/publish/probe 仅支持配置了固定非 root release profile 的 Agent。probe 只读取固定本机 release endpoint 并核对服务端从冻结候选派生的版本 UUID，不接收客户端路径或命令。', parameters: [{ name: 'nodeId', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': ok('#/components/schemas/AgentTask'), '204': { description: '暂无任务' }, '401': { description: 'Agent 身份未登记或节点 ID 不匹配' }, '409': { description: '候选或节点任务当前不可执行' } } },
+    },
+    '/agent/v1/publish/tasks/{taskId}/artifact': {
+      get: { tags: ['agent'], summary: '读取已领取任务对应的冻结发布制品', operationId: 'agentPublishArtifact', security: [], description: '仅返回任务所属节点的冻结候选制品；任务必须已领取且未过期。Agent 不接受 task 提供的任意制品 URL。', parameters: [{ name: 'taskId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }, { name: 'nodeId', in: 'query', required: true, schema: { type: 'string' } }], responses: { '200': ok('#/components/schemas/AgentReleaseArtifact'), '401': { description: 'Agent 身份未登记或节点 ID 不匹配' }, '404': { description: '任务不存在或不属于该节点' }, '409': { description: '任务未领取、已过期或没有候选制品' } } },
     },
     '/agent/v1/tasks/{taskId}/result': {
       post: { tags: ['agent'], summary: 'Agent 回报固定操作任务结果', operationId: 'agentTaskResult', security: [], description: '仅可通过独立 mTLS listener 调用；任务结果按 taskId 幂等保存。', parameters: [{ name: 'taskId', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } }], requestBody: { required: true, content: { 'application/json': { schema: { type: 'object', required: ['taskId', 'nodeId', 'status'], properties: { taskId: { type: 'string', format: 'uuid' }, nodeId: { type: 'string' }, status: { type: 'string', enum: ['succeeded', 'failed', 'rejected'] }, startedAt: { type: 'string', format: 'date-time' }, completedAt: { type: 'string', format: 'date-time' }, output: { type: 'string', maxLength: 4096 }, error: { type: 'string', maxLength: 2048 } } } } } }, responses: { '204': { description: '结果已保存' }, '403': { description: '任务不属于该节点' }, '409': { description: '任务尚未领取或已经过期' } } },
@@ -1063,29 +1234,29 @@ export const openApiSpec = {
       put: {
         tags: ['alerts'], summary: '更新告警通道', operationId: 'updateAlertChannel', parameters: [idParam],
         requestBody: jsonBody('#/components/schemas/AlertChannelPayload', { name: '运维告警群', type: 'webhook', enabled: true }),
-        responses: { '200': { description: '已更新通道；Webhook 地址和签名密钥留空时保持原值' }, '404': bad('告警通道不存在', 404) },
+        responses: { '200': ok('#/components/schemas/AlertChannel'), '404': bad('告警通道不存在', 404) },
       },
-      delete: { tags: ['alerts'], summary: '删除告警通道并解除证书关联', operationId: 'deleteAlertChannel', parameters: [idParam], responses: { '200': { description: '删除结果；历史发送记录保留' } } },
+      delete: { tags: ['alerts'], summary: '删除告警通道并解除证书关联', operationId: 'deleteAlertChannel', parameters: [idParam], responses: { '200': ok('#/components/schemas/AlertChannelDeleted') } },
     },
     '/orp/alert-channels/{id}/test': {
-      post: { tags: ['alerts'], summary: '向指定通道发送测试消息', operationId: 'testAlertChannel', parameters: [idParam], responses: { '200': { description: '测试发送结果与接收端响应' }, '502': bad('测试消息发送失败', 502) } },
+      post: { tags: ['alerts'], summary: '向指定通道发送测试消息', operationId: 'testAlertChannel', parameters: [idParam], responses: { '200': ok('#/components/schemas/AlertDelivery'), '502': bad('测试消息发送失败', 502) } },
     },
     '/orp/tls-alert-rules': {
-      get: { tags: ['alerts'], summary: '查询 TLS 证书到期提醒规则及关联通道', operationId: 'listTLSAlertRules', responses: { '200': { description: '证书到期状态与提醒规则列表' } } },
+      get: { tags: ['alerts'], summary: '查询 TLS 证书到期提醒规则及关联通道', operationId: 'listTLSAlertRules', responses: { '200': ok('#/components/schemas/TLSAlertRuleList') } },
     },
     '/orp/tls-alert-rules/{certificateID}': {
       put: {
         tags: ['alerts'], summary: '保存证书到期提醒规则和通道关联', operationId: 'saveTLSAlertRule',
         parameters: [{ name: 'certificateID', in: 'path', required: true, schema: { type: 'integer', minimum: 1 } }],
         requestBody: jsonBody('#/components/schemas/TLSAlertRulePayload', { enabled: true, daysBefore: 30, channelIds: [1] }),
-        responses: { '200': { description: '已保存规则' }, '400': bad('提醒天数或通道关联无效') },
+        responses: { '200': ok('#/components/schemas/TLSAlertRuleSaved'), '400': bad('提醒天数或通道关联无效') },
       },
     },
     '/orp/alert-deliveries': {
-      get: { tags: ['alerts'], summary: '分页查询告警发送历史', operationId: 'listAlertDeliveries', parameters: pageParams, responses: { '200': { description: '告警发送记录分页结果' } } },
+      get: { tags: ['alerts'], summary: '分页查询告警发送历史', operationId: 'listAlertDeliveries', parameters: pageParams, responses: { '200': ok('#/components/schemas/AlertDeliveryPage') } },
     },
     '/orp/tls-alerts/check': {
-      post: { tags: ['alerts'], summary: '立即检查 TLS 到期规则并推送通知', operationId: 'checkTLSAlerts', responses: { '200': { description: '检查证书数、成功数、失败数及错误信息' } } },
+      post: { tags: ['alerts'], summary: '立即检查 TLS 到期规则并推送通知', operationId: 'checkTLSAlerts', responses: { '200': ok('#/components/schemas/TLSAlertSweepResult') } },
     },
   },
   components: {
@@ -1093,6 +1264,194 @@ export const openApiSpec = {
       bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
     },
     schemas: {
+      AgentTask: {
+        type: 'object', required: ['id', 'nodeId', 'operation', 'releaseId', 'digest', 'issuedAt', 'expiresAt'], properties: {
+          id: { type: 'string', format: 'uuid' }, nodeId: { type: 'string' }, operation: { type: 'string', enum: ['reload', 'validate', 'publish', 'probe'] },
+          releaseId: { type: 'string', format: 'uuid', nullable: true }, digest: { type: 'string', pattern: '^[a-f0-9]{64}$', nullable: true }, issuedAt: { type: 'string', format: 'date-time' }, expiresAt: { type: 'string', format: 'date-time' },
+        },
+      },
+      AgentReleaseArtifact: {
+        type: 'object', required: ['centerId', 'releaseId', 'config', 'files', 'digest'], properties: {
+          centerId: { type: 'integer' }, releaseId: { type: 'string', format: 'uuid' }, config: { type: 'string' }, files: { type: 'object', additionalProperties: { type: 'string' } }, digest: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+        },
+      },
+      PublishCreated: { type: 'object', required: ['batchId', 'total'], properties: { batchId: { type: 'integer' }, total: { type: 'integer' } } },
+      PublishBatchAborted: { type: 'object', required: ['id', 'phase', 'abortedCount'], properties: { id: { type: 'integer' }, phase: { type: 'string', enum: ['aborted'] }, abortedCount: { type: 'integer' } } },
+      PublishBatchAdvanced: { type: 'object', required: ['id', 'phase'], properties: { id: { type: 'integer' }, phase: { type: 'string', enum: ['running'] } } },
+      PublishNodeItem: { type: 'object', required: ['itemId', 'requiresReconciliation', 'nodeId', 'nodeName', 'centerId', 'centerName', 'batchIndex', 'weight', 'status', 'error', 'startedAt', 'finishedAt'], properties: { itemId: { type: 'integer', minimum: 1, description: '真实的 orp_publish_item 主键，用于人工核对恢复接口' }, requiresReconciliation: { type: 'boolean', description: '仅在 recovery_required 阶段，failed 项及错误为“控制面重启，尚未开始的下发已停止”的 aborted 项为 true' }, nodeId: { type: 'integer' }, nodeName: { type: 'string' }, centerId: { type: 'integer' }, centerName: { type: 'string' }, batchIndex: { type: 'integer' }, weight: { type: 'integer' }, status: { type: 'string', enum: ['queued', 'validating', 'deploying', 'success', 'failed', 'aborted'] }, error: { type: 'string', nullable: true }, startedAt: { type: 'string', nullable: true }, finishedAt: { type: 'string', nullable: true } } },
+      PublishBatchGroup: { type: 'object', properties: { index: { type: 'integer' }, nodeIds: { type: 'array', items: { type: 'integer' } }, weightSum: { type: 'integer' }, status: { type: 'string', enum: ['success', 'failed', 'aborted', 'running', 'pending', 'observing'] } } },
+      PublishBatch: { type: 'object', required: ['id', 'operator', 'mode', 'phase', 'createdAt', 'currentBatchIndex', 'totalBatches', 'batchGroups', 'canary', 'done', 'items', 'successCount', 'failCount', 'abortedCount'], properties: { id: { type: 'integer' }, operator: { type: 'string' }, mode: { type: 'string', enum: ['all', 'weighted'] }, phase: { type: 'string', enum: ['running', 'canary_observing', 'recovery_required', 'done', 'aborted'] }, createdAt: { type: 'integer', description: 'Unix epoch milliseconds' }, currentBatchIndex: { type: 'integer' }, totalBatches: { type: 'integer' }, batchGroups: { type: 'array', items: { $ref: '#/components/schemas/PublishBatchGroup' } }, canary: { type: 'object', required: ['enabled', 'remaining', 'waitSeconds'], properties: { enabled: { type: 'boolean' }, remaining: { type: 'integer', nullable: true }, waitSeconds: { type: 'integer' } } }, done: { type: 'boolean' }, items: { type: 'array', items: { $ref: '#/components/schemas/PublishNodeItem' } }, successCount: { type: 'integer' }, failCount: { type: 'integer' }, abortedCount: { type: 'integer' } } },
+      PublishRecoveryContinuePayload: { type: 'object', required: ['confirmations'], properties: { confirmations: { type: 'array', minItems: 1, items: { type: 'object', required: ['itemId', 'observedReleaseUuid'], properties: { itemId: { type: 'integer', minimum: 1 }, observedReleaseUuid: { type: 'string', format: 'uuid', description: '操作员现场观察到的当前活动 release UUID；服务端会独立固定探针核对' } } } } } },
+      PublishRecoveryContinueResult: { type: 'object', required: ['id', 'phase', 'resumedCount', 'alreadyAppliedCount', 'skippedFailedCount'], properties: { id: { type: 'integer' }, phase: { type: 'string', enum: ['running'] }, resumedCount: { type: 'integer' }, alreadyAppliedCount: { type: 'integer' }, skippedFailedCount: { type: 'integer' } } },
+      AgentCertificateRegistration: { type: 'object', required: ['nodeId', 'agentId', 'certificateFingerprint', 'revoked'], properties: { nodeId: { type: 'integer' }, agentId: { type: 'string' }, certificateFingerprint: { type: 'string', description: '撤销后为空字符串' }, revoked: { type: 'boolean' } } },
+      AgentTaskQueued: { type: 'object', required: ['id', 'nodeId', 'operation', 'issuedAt', 'expiresAt'], properties: { id: { type: 'string', format: 'uuid' }, nodeId: { type: 'string' }, operation: { type: 'string', enum: ['reload'] }, issuedAt: { type: 'string', format: 'date-time' }, expiresAt: { type: 'string', format: 'date-time' } } },
+      AgentTaskPage: { type: 'object', required: ['items'], properties: { items: { type: 'array', items: { type: 'object', required: ['id', 'operation', 'status', 'issuedAt', 'expiresAt'], properties: { id: { type: 'string', format: 'uuid' }, operation: { type: 'string', enum: ['reload', 'validate', 'publish', 'probe'] }, status: { type: 'string', enum: ['queued', 'claimed', 'succeeded', 'failed', 'rejected', 'expired'] }, issuedAt: { type: 'string', format: 'date-time' }, expiresAt: { type: 'string', format: 'date-time' }, claimedAt: { type: 'string', format: 'date-time', nullable: true }, completedAt: { type: 'string', format: 'date-time', nullable: true }, resultStatus: { type: 'string', nullable: true }, output: { type: 'string', nullable: true }, error: { type: 'string', nullable: true } } } } } },
+      AgentReloadTask: { type: 'object', required: ['id', 'nodeId', 'operation', 'issuedAt', 'expiresAt'], properties: { id: { type: 'string', format: 'uuid' }, nodeId: { type: 'string' }, operation: { type: 'string', enum: ['reload'] }, issuedAt: { type: 'string', format: 'date-time' }, expiresAt: { type: 'string', format: 'date-time' } } },
+      CertificatePublicDetail: { type: 'object', required: ['certificate', 'certificateChain'], properties: { certificate: { type: 'string' }, certificateChain: { type: 'string' } } },
+      CertificateStats: { type: 'object', required: ['total', 'expiredCount', 'criticalCount', 'expiringCount', 'watchlist'], properties: { total: { type: 'integer' }, expiredCount: { type: 'integer' }, criticalCount: { type: 'integer' }, expiringCount: { type: 'integer' }, watchlist: { type: 'array', items: { type: 'object', required: ['id', 'name', 'domains', 'notAfter', 'days'], properties: { id: { type: 'integer' }, name: { type: 'string' }, domains: { type: 'string' }, notAfter: { type: 'string', format: 'date' }, days: { type: 'integer' } } } } } },
+      NodeLatencyHistory: { type: 'object', required: ['nodeId', 'nodeName', 'centerName', 'healthStatus', 'intervalSec', 'samples', 'summary'], properties: { nodeId: { type: 'integer' }, nodeName: { type: 'string' }, centerName: { type: 'string' }, healthStatus: { type: 'string', enum: ['online', 'offline', 'degraded'] }, intervalSec: { type: 'integer' }, samples: { type: 'array', items: { type: 'object', required: ['ts', 'ok', 'rtt'], properties: { ts: { type: 'string' }, ok: { type: 'boolean' }, rtt: { type: 'number', nullable: true } } } }, summary: { type: 'object', required: ['lossRate', 'sampleCount', 'timeoutMs'], properties: { avgMs: { type: 'number', nullable: true }, minMs: { type: 'number', nullable: true }, maxMs: { type: 'number', nullable: true }, p95Ms: { type: 'number', nullable: true }, lossRate: { type: 'number' }, sampleCount: { type: 'integer' }, timeoutMs: { type: 'integer' } } } } },
+      StringList: { type: 'array', items: { type: 'string' } },
+      SettingGroup: { type: 'object', required: ['id', 'code', 'description', 'isSystem', 'name', 'sortOrder', 'createdAt', 'updatedAt'], properties: { id: { type: 'integer' }, code: { type: 'string' }, description: { type: 'string' }, isSystem: { type: 'boolean' }, name: { type: 'string' }, sortOrder: { type: 'integer' }, settingCount: { type: 'integer', description: '列表读取时附加；创建/更新响应不包含' }, createdAt: { type: 'string' }, updatedAt: { type: 'string' } } },
+      SettingGroupList: { type: 'array', items: { $ref: '#/components/schemas/SettingGroup' } },
+      SettingResource: { type: 'object', required: ['id', 'key', 'name', 'group', 'type', 'value', 'isSensitive', 'status', 'description'], properties: { id: { type: 'integer' }, key: { type: 'string' }, name: { type: 'string' }, group: { type: 'string' }, type: { type: 'string', enum: ['boolean', 'json', 'number', 'string'] }, value: { type: 'string', description: 'plain 接口对敏感项返回解密明文；状态接口仍按普通列表规则脱敏' }, isSensitive: { type: 'boolean' }, status: { type: 'string', enum: ['enabled', 'disabled'] }, description: { type: 'string' }, createdAt: { type: 'string' }, updatedAt: { type: 'string' }, runtimeManaged: { type: 'boolean' }, envKey: { type: 'string' }, restartRequired: { type: 'boolean' }, effectiveSource: { type: 'string', enum: ['database', 'default', 'environment'] }, optional: { type: 'boolean' } } },
+      SettingBatchMoveResult: { type: 'object', required: ['moved', 'targetGroup'], properties: { moved: { type: 'integer' }, targetGroup: { type: 'string' } } },
+      DirectiveList: { type: 'array', items: { type: 'object', required: ['name', 'value'], properties: { name: { type: 'string' }, value: { type: 'string' } } } },
+      LogFormat: { type: 'object', required: ['name', 'format'], properties: { name: { type: 'string' }, format: { type: 'string' } } },
+      ErrorPageMap: { type: 'object', additionalProperties: { type: 'string' }, description: 'data is a map from status-code or status-code|Content-Type keys to page text' },
+      LogLineList: { type: 'object', required: ['logs'], properties: { logs: { type: 'array', items: { type: 'object', required: ['id', 'level', 'line', 'ts'], properties: { id: { type: 'integer' }, level: { type: 'string' }, line: { type: 'string' }, ts: { type: 'string' } } } } } },
+      PublishPrecheckResult: { type: 'object', required: ['items', 'passed'], properties: { passed: { type: 'boolean' }, items: { type: 'array', items: { type: 'object', required: ['centerId', 'centerName', 'nodeId', 'nodeName', 'command', 'output', 'passed', 'errors', 'candidateDigest', 'baselineRelease', 'semanticDiff', 'addCount', 'delCount'], properties: { centerId: { type: 'integer' }, centerName: { type: 'string' }, nodeId: { type: 'integer' }, nodeName: { type: 'string' }, command: { type: 'string' }, output: { type: 'string' }, passed: { type: 'boolean' }, errors: { type: 'array', items: { type: 'object', properties: { line: { type: 'integer' }, message: { type: 'string' } } } }, candidateDigest: { type: 'string' }, baselineRelease: { type: 'string', nullable: true }, semanticDiff: { type: 'array', items: { type: 'object', properties: { kind: { type: 'string' }, id: { type: 'string' }, action: { type: 'string', enum: ['create', 'delete', 'update'] }, fields: { type: 'array', items: { type: 'string' } } } } }, addCount: { type: 'integer' }, delCount: { type: 'integer' } } } } } },
+      PublishSummary: { type: 'object', required: ['activeBatchId', 'groups', 'pendingCount'], properties: { activeBatchId: { type: 'integer', nullable: true }, pendingCount: { type: 'integer' }, groups: { type: 'array', items: { type: 'object', required: ['centerId', 'centerName', 'nodes'], properties: { centerId: { type: 'integer' }, centerName: { type: 'string' }, nodes: { type: 'array', items: { type: 'object', properties: { id: { type: 'integer' }, name: { type: 'string' }, host: { type: 'string' }, status: { type: 'string' }, lastChangeAt: { type: 'string', nullable: true }, eventCount: { type: 'integer' } } } } } } } }},
+      PublishDiff: { type: 'object', required: ['centerId', 'centerName', 'node', 'version', 'lastPublishedAt', 'runningText', 'expectedText', 'diff', 'addCount', 'delCount', 'resourceDiffAvailable', 'resourceDiff', 'events'], properties: { centerId: { type: 'integer' }, centerName: { type: 'string' }, node: { type: 'object', properties: { id: { type: 'integer' }, name: { type: 'string' }, host: { type: 'string' }, status: { type: 'string' } } }, version: { type: 'integer' }, lastPublishedAt: { type: 'string', nullable: true }, runningText: { type: 'string' }, expectedText: { type: 'string' }, diff: { type: 'array', items: { type: 'object', required: ['t', 's'], properties: { t: { type: 'integer', enum: [-1, 0, 1] }, s: { type: 'string' } } } }, addCount: { type: 'integer' }, delCount: { type: 'integer' }, resourceDiffAvailable: { type: 'boolean' }, resourceDiff: { type: 'array', items: { type: 'object', required: ['kind', 'id', 'action'], properties: { kind: { type: 'string' }, id: { type: 'string' }, action: { type: 'string', enum: ['create', 'delete', 'update'] }, fields: { type: 'array', items: { type: 'string' } } } } }, events: { type: 'array', items: { type: 'object', properties: { action: { type: 'string' }, module: { type: 'string' }, target: { type: 'string' }, ts: { type: 'string' } } } } } },
+      PublishHistoryPage: { type: 'object', required: ['items', 'total'], properties: { total: { type: 'integer' }, items: { type: 'array', items: { type: 'object', properties: { id: { type: 'integer' }, batchId: { type: 'integer' }, centerId: { type: 'integer' }, centerName: { type: 'string' }, nodeId: { type: 'integer' }, nodeName: { type: 'string' }, operator: { type: 'string' }, createdAt: { type: 'string' }, durationMs: { type: 'integer' }, result: { type: 'string' }, addCount: { type: 'integer' }, delCount: { type: 'integer' }, modules: { type: 'array', items: { type: 'string' } }, events: { type: 'array', items: { type: 'object', properties: { action: { type: 'string' }, module: { type: 'string' }, target: { type: 'string' }, ts: { type: 'string' } } } } } } } } },
+      PublishHistoryStats: { type: 'object', required: ['totalCount', 'successCount', 'failCount', 'successRate', 'totalBatches', 'abortedBatches', 'topCenters'], properties: { totalCount: { type: 'integer' }, successCount: { type: 'integer' }, failCount: { type: 'integer' }, successRate: { type: 'number' }, totalBatches: { type: 'integer' }, abortedBatches: { type: 'integer' }, topCenters: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, count: { type: 'integer' }, percent: { type: 'number' } } } } } },
+      PublishRollbackResult: { type: 'object', required: ['batchId', 'nodeId', 'nodeName', 'rollbackTo'], properties: { batchId: { type: 'integer' }, nodeId: { type: 'integer' }, nodeName: { type: 'string' }, rollbackTo: { type: 'string', format: 'uuid' } } },
+      AlertChannelList: { type: 'array', items: { $ref: '#/components/schemas/AlertChannel' } },
+      AlertChannelDeleted: { type: 'object', required: ['id', 'name'], properties: { id: { type: 'integer' }, name: { type: 'string' } } },
+      AlertDeliveryPage: { type: 'object', required: ['items', 'total', 'page', 'pageSize'], properties: { items: { type: 'array', items: { $ref: '#/components/schemas/AlertDelivery' } }, total: { type: 'integer' }, page: { type: 'integer' }, pageSize: { type: 'integer' } } },
+      TLSAlertRuleList: { type: 'array', items: { $ref: '#/components/schemas/TLSAlertRule' } },
+      TLSAlertRuleSaved: { type: 'object', required: ['certificateId', 'enabled', 'daysBefore', 'channelIds', 'name'], properties: { certificateId: { type: 'integer' }, enabled: { type: 'boolean' }, daysBefore: { type: 'integer' }, channelIds: { type: 'array', items: { type: 'integer' } }, name: { type: 'string' } } },
+      TLSAlertSweepResult: { type: 'object', required: ['certificatesChecked', 'notificationsSent', 'notificationsFailed'], properties: { certificatesChecked: { type: 'integer' }, notificationsSent: { type: 'integer' }, notificationsFailed: { type: 'integer' }, errors: { type: 'array', items: { type: 'string' } } } },
+      ConfigurationCandidatePayload: {
+        type: 'object', required: ['centerId', 'nodeIds'], properties: {
+          centerId: { type: 'integer', minimum: 1 }, nodeIds: { type: 'array', minItems: 1, maxItems: 100, uniqueItems: true, items: { type: 'integer', minimum: 1 } },
+          concurrency: { type: 'integer', minimum: 1, maximum: 32, default: 1, description: '不得超过中心 maxInflight' },
+          publishOnValidationSuccess: { type: 'boolean', default: false, description: '仅全部冻结目标校验通过时自动创建发布批次；失败或结果未知不会自动发布' },
+          publishStrategy: { $ref: '#/components/schemas/CandidatePublishStrategy' },
+        },
+      },
+      CandidatePublishStrategy: {
+        type: 'object', properties: {
+          mode: { type: 'string', enum: ['all', 'weighted'], default: 'all' },
+          batchCount: { type: 'integer', minimum: 1, maximum: 5, description: 'weighted 模式分批数' },
+          canary: { type: 'object', properties: { enabled: { type: 'boolean' }, waitSeconds: { type: 'integer', minimum: 1, maximum: 300 } } },
+        },
+      },
+      ConfigurationCandidatePublishPayload: { type: 'object', properties: { strategy: { $ref: '#/components/schemas/CandidatePublishStrategy' } } },
+      ConfigurationCandidatePublishResult: {
+        type: 'object', required: ['candidateId', 'batchId', 'total', 'mode', 'phase'], properties: {
+          candidateId: { type: 'integer' }, batchId: { type: 'integer' }, total: { type: 'integer' }, mode: { type: 'string', enum: ['all', 'weighted'] }, phase: { type: 'string', enum: ['running'] },
+        },
+      },
+      CandidatePublishState: { type: 'string', enum: ['not_requested', 'waiting_validation', 'preparing', 'started', 'recovery_required', 'succeeded', 'failed', 'aborted'], example: 'waiting_validation', description: 'recovery_required 表示关联批次中断并需操作员现场核对；succeeded、failed、aborted 为关联发布批次终态' },
+      ConfigurationCandidateCreated: {
+        type: 'object', required: ['id', 'candidateUuid', 'centerId', 'digest', 'targetIds', 'attemptId', 'status', 'diffs', 'maxInflight', 'publishOnValidationSuccess', 'publishState', 'publishBatchId', 'publishError'], properties: {
+          id: { type: 'integer' }, candidateUuid: { type: 'string', format: 'uuid' }, centerId: { type: 'integer' }, digest: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+          targetIds: { type: 'array', items: { type: 'integer' } }, attemptId: { type: 'integer' }, status: { type: 'string', example: 'queued' }, diffs: { type: 'array', items: { $ref: '#/components/schemas/ConfigurationCandidateDiff' } }, maxInflight: { type: 'integer' }, publishOnValidationSuccess: { type: 'boolean' }, publishState: { $ref: '#/components/schemas/CandidatePublishState' }, publishBatchId: { type: 'integer', nullable: true }, publishError: { type: 'string', nullable: true },
+        },
+      },
+      ConfigurationCandidatePage: {
+        type: 'object', required: ['items', 'total'], properties: {
+          items: { type: 'array', items: { $ref: '#/components/schemas/ConfigurationCandidate' } }, total: { type: 'integer' },
+        },
+      },
+      ConfigurationCandidate: {
+        type: 'object', required: ['id', 'candidateUuid', 'centerId', 'creator', 'targetIds', 'digest', 'archived', 'attemptId', 'attemptNo', 'attemptState', 'concurrency', 'blocked', 'blocker', 'createdAt', 'publishOnValidationSuccess', 'publishState', 'publishBatchId', 'publishError'], properties: {
+          id: { type: 'integer' }, candidateUuid: { type: 'string', format: 'uuid' }, centerId: { type: 'integer' }, creator: { type: 'string' },
+          targetIds: { type: 'array', items: { type: 'integer' } }, digest: { type: 'string', pattern: '^[a-f0-9]{64}$' }, archived: { type: 'boolean' },
+          attemptId: { type: 'integer', nullable: true }, attemptNo: { type: 'integer', nullable: true }, attemptState: { type: 'string', nullable: true },
+          concurrency: { type: 'integer', nullable: true }, blocked: { type: 'boolean' }, blocker: { type: 'string', nullable: true }, createdAt: { type: 'string' },
+          publishOnValidationSuccess: { type: 'boolean' }, publishState: { $ref: '#/components/schemas/CandidatePublishState' }, publishBatchId: { type: 'integer', nullable: true }, publishError: { type: 'string', nullable: true },
+        },
+      },
+      ConfigurationCandidateDetail: {
+        type: 'object', required: ['id', 'candidateUuid', 'centerId', 'creator', 'targetIds', 'digest', 'archived', 'createdAt', 'attempts', 'publishOnValidationSuccess', 'publishState', 'publishBatchId', 'publishError'], properties: {
+          id: { type: 'integer' }, candidateUuid: { type: 'string', format: 'uuid' }, centerId: { type: 'integer' }, creator: { type: 'string' },
+          targetIds: { type: 'array', items: { type: 'integer' } }, digest: { type: 'string', pattern: '^[a-f0-9]{64}$' }, archived: { type: 'boolean' }, createdAt: { type: 'string' },
+          publishOnValidationSuccess: { type: 'boolean' }, publishState: { $ref: '#/components/schemas/CandidatePublishState' }, publishBatchId: { type: 'integer', nullable: true }, publishError: { type: 'string', nullable: true },
+          diffs: { type: 'array', items: { $ref: '#/components/schemas/ConfigurationCandidateDiff' } },
+          attempts: { type: 'array', items: { $ref: '#/components/schemas/ConfigurationValidationAttempt' } },
+        },
+      },
+      ConfigurationCandidateDiff: {
+        type: 'object', required: ['nodeId', 'baselineVersion', 'baselineDigest', 'candidateDigest', 'semanticDiff', 'textDiff', 'addedLines', 'deletedLines'], properties: {
+          nodeId: { type: 'integer' }, baselineVersion: { type: 'string', format: 'uuid', nullable: true }, baselineDigest: { type: 'string', pattern: '^[a-f0-9]{64}$', nullable: true }, candidateDigest: { type: 'string', pattern: '^[a-f0-9]{64}$' },
+          semanticDiff: { type: 'array', items: { type: 'object', additionalProperties: true } }, textDiff: { type: 'array', items: { type: 'object', required: ['t', 's'], properties: { t: { type: 'integer', enum: [-1, 0, 1] }, s: { type: 'string' } } } }, addedLines: { type: 'integer' }, deletedLines: { type: 'integer' },
+        },
+      },
+      ValidationCenterPolicyPayload: {
+        type: 'object', required: ['maxInflight'], properties: { maxInflight: { type: 'integer', minimum: 1, maximum: 32 } },
+      },
+      ValidationCenterPolicy: {
+        type: 'object', required: ['centerId', 'maxInflight'], properties: { centerId: { type: 'integer' }, maxInflight: { type: 'integer', minimum: 1, maximum: 32 }, default: { type: 'boolean', description: 'true 表示中心尚未保存显式策略，当前按默认值运行' } },
+      },
+      ConfigurationValidationAttempt: {
+        type: 'object', required: ['id', 'attemptNo', 'state', 'blocked', 'blocker', 'concurrency', 'createdAt', 'finishedAt', 'jobs'], properties: {
+          id: { type: 'integer' }, attemptNo: { type: 'integer' }, state: { type: 'string' }, concurrency: { type: 'integer' },
+          blocked: { type: 'boolean' }, blocker: { type: 'string', nullable: true }, createdAt: { type: 'string' }, finishedAt: { type: 'string', nullable: true }, jobs: { type: 'array', items: { $ref: '#/components/schemas/ConfigurationValidationJob' } },
+        },
+      },
+      ConfigurationValidationJob: {
+        type: 'object', required: ['nodeId', 'state', 'blocked', 'blocker', 'command', 'output', 'startedAt', 'finishedAt'], properties: {
+          nodeId: { type: 'integer' }, state: { type: 'string', enum: ['queued', 'running', 'passed', 'failed', 'unknown', 'paused', 'cancelled', 'adapter_required'] },
+          blocked: { type: 'boolean' }, blocker: { type: 'string', nullable: true }, command: { type: 'string', nullable: true }, output: { type: 'string', nullable: true }, startedAt: { type: 'string', nullable: true }, finishedAt: { type: 'string', nullable: true },
+        },
+      },
+      ConfigurationCandidateActionResult: {
+        type: 'object', required: ['id', 'action'], properties: { id: { type: 'integer' }, action: { type: 'string', enum: ['archive', 'restore', 'retry', 'continue', 'stop'] } },
+      },
+      RbacUserPage: {
+        type: 'object', required: ['items', 'total'], properties: {
+          items: { type: 'array', items: { $ref: '#/components/schemas/RbacUserItem' } }, total: { type: 'integer' },
+        },
+      },
+      RbacUserItem: {
+        type: 'object', required: ['id', 'username', 'realName', 'status', 'roleIds'], properties: {
+          id: { type: 'integer' }, username: { type: 'string' }, realName: { type: 'string' },
+          email: { type: 'string', nullable: true }, phone: { type: 'string', nullable: true }, status: { type: 'string', enum: ['enabled', 'disabled'] },
+          roleIds: { type: 'array', items: { type: 'integer' } }, roleNames: { type: 'array', items: { type: 'string' } },
+          createdAt: { type: 'string' }, lastLoginAt: { type: 'string', nullable: true },
+        },
+      },
+      RbacUserCreated: {
+        type: 'object', required: ['id', 'username', 'realName', 'roleIds', 'status'], properties: {
+          id: { type: 'integer' }, username: { type: 'string' }, realName: { type: 'string' },
+          roleIds: { type: 'array', items: { type: 'integer' } }, status: { type: 'string', enum: ['enabled', 'disabled'] },
+        },
+      },
+      RbacUserUpdated: {
+        type: 'object', required: ['id', 'realName', 'roleIds', 'status'], properties: {
+          id: { type: 'integer' }, realName: { type: 'string' }, roleIds: { type: 'array', items: { type: 'integer' } },
+          status: { type: 'string', enum: ['enabled', 'disabled'] },
+        },
+      },
+      RbacPasswordReset: {
+        type: 'object', required: ['username', 'resetTo'], properties: { username: { type: 'string' }, resetTo: { type: 'string' } },
+      },
+      RbacRolePage: {
+        type: 'object', required: ['items', 'total'], properties: {
+          items: { type: 'array', items: { $ref: '#/components/schemas/RbacRoleItem' } }, total: { type: 'integer' },
+        },
+      },
+      RbacRoleItem: {
+        type: 'object', required: ['id', 'code', 'name', 'status', 'builtin', 'userCount', 'permissionKeys', 'centerIds'], properties: {
+          id: { type: 'integer' }, code: { type: 'string' }, name: { type: 'string' }, description: { type: 'string', nullable: true },
+          status: { type: 'string', enum: ['enabled', 'disabled'] }, builtin: { type: 'boolean' }, userCount: { type: 'integer' },
+          permissionKeys: { type: 'array', items: { type: 'string' } }, centerIds: { type: 'array', items: { type: 'string' } }, createdAt: { type: 'string' },
+        },
+      },
+      RbacRoleCreated: {
+        type: 'object', required: ['id', 'code', 'name', 'builtin', 'status', 'permissionKeys', 'centerIds'], properties: {
+          id: { type: 'integer' }, code: { type: 'string' }, name: { type: 'string' }, builtin: { type: 'boolean' },
+          status: { type: 'string', enum: ['enabled', 'disabled'] }, permissionKeys: { type: 'array', items: { type: 'string' } },
+          centerIds: { type: 'array', items: { type: 'string' } },
+        },
+      },
+      RbacRoleUpdated: {
+        type: 'object', required: ['id', 'name', 'status', 'permissionKeys', 'centerIds'], properties: {
+          id: { type: 'integer' }, name: { type: 'string' }, status: { type: 'string', enum: ['enabled', 'disabled'] },
+          permissionKeys: { type: 'array', items: { type: 'string' } }, centerIds: { type: 'array', items: { type: 'string' } },
+        },
+      },
+      RbacPermissionKeys: {
+        type: 'object', required: ['permissionKeys'], properties: { permissionKeys: { type: 'array', items: { type: 'string' } } },
+      },
+      RbacPermissionNodeList: { type: 'array', items: { $ref: '#/components/schemas/RbacPermissionNode' } },
+      RbacPermissionNode: {
+        type: 'object', required: ['key', 'title', 'type', 'children'], properties: {
+          key: { type: 'string' }, title: { type: 'string' }, type: { type: 'string', enum: ['menu', 'action'] },
+          children: { type: 'array', items: { $ref: '#/components/schemas/RbacPermissionNode' } },
+        },
+      },
       ApiResponseError: {
         type: 'object',
         description: '统一失败响应（code=-1）',
@@ -1121,6 +1480,34 @@ export const openApiSpec = {
           targetHint: { type: 'string', description: '脱敏后的推送地址提示' }, hasSecret: { type: 'boolean' }, enabled: { type: 'boolean' },
           createdAt: { type: 'string', format: 'date-time' }, updatedAt: { type: 'string', format: 'date-time' },
         },
+      },
+      APIConsumerPayload: {
+        type: 'object', required: ['name'], properties: {
+          name: { type: 'string', minLength: 1, maxLength: 128 }, description: { type: 'string', maxLength: 500 },
+          status: { type: 'string', enum: ['enabled', 'disabled'], default: 'enabled' },
+        },
+      },
+      APIConsumer: {
+        type: 'object', required: ['id', 'name', 'description', 'status', 'activeKeyCount', 'createdBy', 'createdAt', 'updatedAt'], properties: {
+          id: { type: 'integer' }, name: { type: 'string' }, description: { type: 'string' }, status: { type: 'string', enum: ['enabled', 'disabled'] },
+          activeKeyCount: { type: 'integer', description: '当前有效且未过期的密钥数' }, createdBy: { type: 'string' }, createdAt: { type: 'string', format: 'date-time' }, updatedAt: { type: 'string', format: 'date-time' },
+        },
+      },
+      APIConsumerPage: { type: 'object', required: ['items', 'total', 'page', 'pageSize'], properties: { items: { type: 'array', items: { $ref: '#/components/schemas/APIConsumer' } }, total: { type: 'integer' }, page: { type: 'integer' }, pageSize: { type: 'integer' } } },
+      APIKeyIssuePayload: { type: 'object', properties: { expiresAt: { type: 'string', format: 'date-time', description: '可选；未提供则不自动过期，提供时必须为未来 RFC3339 时间' } } },
+      APIKey: {
+        type: 'object', required: ['id', 'consumerId', 'keyPrefix', 'status', 'createdBy', 'createdAt'], properties: {
+          id: { type: 'integer' }, consumerId: { type: 'integer' }, keyPrefix: { type: 'string', description: '非敏感短前缀；完整密钥不可再次读取' },
+          status: { type: 'string', enum: ['active', 'revoked'] }, expiresAt: { type: 'string', format: 'date-time', nullable: true }, lastUsedAt: { type: 'string', format: 'date-time', nullable: true },
+          createdBy: { type: 'string' }, createdAt: { type: 'string', format: 'date-time' }, revokedBy: { type: 'string' }, revokedAt: { type: 'string', format: 'date-time', nullable: true }, rotatedFromId: { type: 'integer' },
+        },
+      },
+      APIKeyPage: { type: 'object', required: ['items', 'total', 'page', 'pageSize'], properties: { items: { type: 'array', items: { $ref: '#/components/schemas/APIKey' } }, total: { type: 'integer' }, page: { type: 'integer' }, pageSize: { type: 'integer' } } },
+      APIKeyIssueResult: {
+        allOf: [
+          { $ref: '#/components/schemas/APIKey' },
+          { type: 'object', required: ['secret'], properties: { secret: { type: 'string', format: 'password', description: '只在签发或轮换成功响应中显示一次；服务端仅保存哈希' } } },
+        ],
       },
       TLSAlertRulePayload: {
         type: 'object', required: ['enabled', 'daysBefore', 'channelIds'],
@@ -1187,6 +1574,7 @@ export const openApiSpec = {
             properties: {
               state: { type: 'string', enum: ['disabled', 'error', 'ready'] },
               reason: { type: 'string' },
+              databaseType: { type: 'string', description: '当前启用的 MMDB 数据库类型；用于按数据源展示许可要求的署名' },
               sampledEvents: { type: 'integer' }, sampleLimit: { type: 'integer' }, unknownRequests: { type: 'integer' },
               points: { type: 'array', items: { type: 'object', properties: { name: { type: 'string' }, countryCode: { type: 'string' }, coord: { type: 'array', items: { type: 'number' } }, requests: { type: 'integer' } } } },
               centers: { type: 'array', items: { type: 'object', properties: { id: { type: 'integer' }, name: { type: 'string' }, coord: { type: 'array', items: { type: 'number' } } } } },
@@ -1340,6 +1728,7 @@ export const openApiSpec = {
         properties: {
           id: { type: 'integer', example: 101, description: '路由规则 ID（更新时携带以保留，新增规则缺省自动生成）' },
           path: { type: 'string', example: '/v2/*' },
+          allowedMethods: { type: 'array', items: { type: 'string', enum: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'] }, description: '允许的方法；空数组或未设置表示不限制' },
           upstream: {
             type: 'string',
             example: 'http://svc-api-v2:8080',
@@ -1347,6 +1736,10 @@ export const openApiSpec = {
               '代理类：转发目标，由上游协议与 Upstream 组名组合生成（http:// 或 https:// 前缀 + 组名）',
           },
           proxyTimeoutMs: { type: 'integer', example: 30000, default: 30000 },
+          rateLimitEnabled: { type: 'boolean', default: false, description: '是否按客户端 IP 对该路由启用限流（单节点范围）' },
+          ratePerSecond: { type: 'integer', minimum: 1, maximum: 100000, default: 100 },
+          rateLimitBurst: { type: 'integer', minimum: 0, maximum: 1000000, default: 50 },
+          rateLimitNodelay: { type: 'boolean', default: true },
           ipPolicy: { $ref: '#/components/schemas/OrpIpPolicy' },
         },
       },

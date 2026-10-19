@@ -1,6 +1,7 @@
 export * from './audit';
 export * from './alerts';
 export * from './centers';
+export * from './candidates';
 export * from './dashboard';
 export * from './dns';
 export * from './http';

@@ -24,7 +24,7 @@
 
 ### 配置候选（Configuration Candidate）
 
-在当前 Compose 实现中，发布预检会冻结一致配置快照、固定节点目标、渲染制品并执行节点语法校验，随后可创建发布批次；目前采用按需预检，不是 ADR-0015 所述的候选生成后自动异步校验。它不实现独立候选工作台、候选归档/重试/公平调度，也不实现中心配置编辑权限校验。后续草稿修改会使发布前重新渲染摘要不匹配，从而要求重新预检。
+Compose 发布仍保留同步预检路径：冻结配置和节点目标、渲染制品、执行目标语法校验后创建批次。另有 V44/V46 异步候选工作流及 `/config-candidates` 管理界面，提供候选冻结、attempt/job、公平租约调度、失败重试、暂停后继续/停止、归档、Diff 与每中心并发策略；目标只覆盖固定 Quickstart 节点和已登记的固定非 root Agent，其他拓扑明确阻断。候选默认仅校验，V49 增加显式手动发布以及默认关闭的“全部目标通过后自动发布”选项，发布前会重新校验中心权限、当前配置、节点身份和冻结基线。后续草稿修改会使发布前重新渲染摘要不匹配，从而要求重新校验候选。
 
 ### 节点运行描述（Node Runtime Profile）
 
@@ -48,7 +48,7 @@
 
 ### 配置审查（Configuration Review）
 
-展示配置变更及目标校验结果的审查证据。长期产品不设置独立人工审批门禁，也不要求提交人与审批人分离；后续发布人仍须确认语义 Diff、最终配置文本 Diff、目标校验结果和发布计划摘要后才能触发发布。首期候选生成、校验、归档和取消归档要求具备目标中心配置编辑权限；候选证据保留且不提供硬删除。后续发布权限仍需在发布阶段定义。
+展示配置变更及目标校验结果的审查证据。长期产品不设置独立人工审批门禁，也不要求提交人与审批人分离；发布人仍须确认语义 Diff、最终配置文本 Diff、目标校验结果和发布计划摘要。候选创建、校验管理和归档要求目标中心配置编辑权限；发布单独要求目标中心发布权限。候选默认仅校验；创建时可明确选择全部目标校验通过后自动发起发布，或在校验通过后由发布人手动确认。自动发布会重新校验权限、配置快照、节点身份及冻结基线；失败或未知结果不会自动发布。候选证据保留且不提供硬删除。
 
 ### 策略模块（Policy Module）
 
@@ -82,7 +82,7 @@ Web 保存只更新 MySQL 草稿。发布先生成绑定配置摘要和发布计
 
 当前 Go Compose 可运行版本包含中心、节点、HTTP/Stream、TLS、DNS Resolver、策略、账号/RBAC、审计等 API。三个固定本地 Docker 示例节点支持冻结发布预检、渲染、目标容器 `nginx -t`、活动路径切换、reload、工作进程版本探针、权重分批/观察期、中止及单节点历史快照回滚；节点指标、定时探测、Kafka 日志持久化、鉴权 SSE 大盘/实时日志、GeoIP 管理接口和 TLS 到期告警也已实现。
 
-当前不是生产完备状态：发布适配器仅接受三个固定 Compose 节点；Agent mTLS listener 已支持心跳、固定 reload 任务和结果回报，但还未接入候选制品暂存、校验及发布批次。证书由外部签发并手动登记指纹。Go 控制面重启时通过版本探针核对执行中 Compose 任务、终止排队项，不支持租约续跑。候选校验仍是同步预检；没有 ADR-0015 定义的异步候选校验工作流。节点级原生指令、主动健康检查和 `slow_start` 等能力会被拒绝或未建模。GeoIP 来源需导入合法数据库，生产日志容量/归档尚未验收。详见 `frontend-backend-migration-status.md` 与 `../orp-node-agent/docs/protocol.md`。
+当前不是生产完备状态：固定三节点 Compose 发布路径继续可用；已登记 Agent 可通过固定任务与制品 API，在 Agent 和 OpenResty master 共用非 root 用户、使用 `/etc/openresty/generated` 固定目录的 profile 下执行目标校验、激活、reload、版本探针和失败回滚。Agent Canary 与中央历史快照回滚已进入固定 `probe`/`validate`/`publish` 任务链。V47 为 Agent publish task 与批次项持久化关联；重启时未领取任务安全取消，可信成功回报核对为成功，结果未知的批次进入 `recovery_required`。`POST /api/orp/publish/batches/{id}/reconcile-continue` 要求操作员逐节点提交观察 UUID，并经本地或 Agent 固定版本探针核实。它只允许冻结候选 UUID 或成功预检记录的基线 UUID；已开始但仍在基线的失败项被跳过，原未开始目标仅在仍处冻结基线、候选有效且节点身份未变化时重新入队，不重放未知激活。root-master/helper 与其他拓扑仍未实现。V44 异步候选 API、MySQL lease worker 和审计已接入；worker 对固定 Quickstart 节点执行非激活 `nginx -t`，对已登记 Agent 节点复用固定 Agent `validate` 操作。V46 冻结时保存逐节点基线版本/摘要与语义、文本 Diff，并提供受 RBAC 与审计保护的每中心 `maxInflight` 策略接口，候选并发和跨实例调度受同一中心上限约束。Agent 校验仅暂存候选并运行 `nginx -t`，不切换活动配置或 reload；异步候选与旧发布候选由 V49 显式关联；候选默认仅校验，可选择手动发布或默认关闭的校验通过后自动发布。非 Quickstart 且无 Agent 的节点、root-master/helper、原生指令或不匹配拓扑会明确校验失败。Agent 证书由外部签发并手动登记指纹。主动健康检查和 `slow_start` 等能力会被拒绝或未建模。GeoIP 来源需导入合法数据库，生产日志容量/归档尚未验收。详见 `frontend-backend-migration-status.md` 与 `../orp-node-agent/docs/protocol.md`。
 
 ### 配置覆盖目标
 
@@ -112,15 +112,15 @@ Go 控制面使用 Go 1.26、`go test ./...` 和 `go vet ./...`；单体应用�
 
 ### 异步任务
 
-本地 Docker 示例节点的发布和 reload 编排已迁移到 Go 控制面；生产发布通道仍待实现。Redis 是外部可选依赖，不是配置权威来源；MySQL 保存候选、目标预检、批次、节点结果和审计证据。
+本地 Docker 示例节点由 Go 控制面编排发布和 reload。固定非 root Agent profile 也可承载既有同步预检和批次发布；V47 保存 Agent publish task 与批次项关联。重启恢复只将未领取 task 安全取消，将明确成功结果记为成功；已领取但结果未知等情况保持暂停并要求人工核对，不会自动重发。独立 V44 候选校验 worker 以 MySQL 保存候选、尝试、节点任务和租约；当前只调度固定 Quickstart 非激活校验器或已登记 Agent 的固定 validate task，不会激活配置。其他节点拓扑仍需受限 adapter。Redis 是外部可选依赖，不是配置权威来源；MySQL 保存候选、目标预检、批次、节点结果和审计证据。
 
 ### 数据库结构初始化
 
-版本化 SQL 是 MySQL schema 的唯一来源；控制面启动时自动执行尚未应用的 SQL，以初始化新数据库或升级既有结构。该流程不导入外部数据库中的旧业务数据。
+版本化 SQL 是 MySQL schema 的唯一来源；控制面启动时自动执行尚未应用的 SQL，以初始化新数据库或升级既有结构。控制面启动不导入之前项目的旧业务数据；受限兼容导入代码不在默认启动路径中。
 
 ### 节点发布通道
 
-生产配置候选在发布前通过受限 SSH 和节点固定脚本暂存到目标节点，并在目标节点真实运行环境执行 `nginx -t`；暂存不得改变活动配置。发布只激活与当前候选摘要一致的字节。平台管理已登记的 systemd unit 和 OpenResty 启动参数；restart 由控制面经管理网双向 TLS 调用节点受保护的 Lua 管理入口，Lua 只请求固定、受限的一次性 systemd service/job 执行 helper，以隔离 helper 与 OpenResty unit 的停止生命周期。执行单元和 helper 均采用固定白名单，不接受任意 unit、命令或参数。首期不负责把直接运行 `./sbin/nginx` 的节点迁移到 systemd；无受支持 unit 的节点不得执行平台 restart 或 unit 变更。节点不运行常驻管理代理。当前 Compose 联调仍以项目目录绑定挂载和节点 Control API 转发为主，尚未实现上述生产链路。
+目标生产通道采用固定 Agent 操作和不可变候选制品，禁止任务携带命令、路径或服务名。当前已实现的 Agent profile 限 Agent 与 OpenResty master 以同一非 root 用户运行：写入固定候选目录、校验摘要和文件名、执行 `nginx -t`、原子切换 `active`、reload、版本探针并在失败时恢复旧链接。它不调用 sudo/helper。V44 异步候选 worker 复用 Agent 的 `validate` 操作时只写入不可变候选目录并执行 `nginx -t`，不会切换 `active` 或 reload。V47 提供保守的 Agent batch 重启核对及人工续跑接口：未领取任务取消、可信成功结果落库，未知状态经逐节点人工记录和固定探针核对；候选仍活动的记录为成功，基线仍活动的已开始任务只跳过，未开始目标仅在身份未变化且基线仍匹配时恢复排队。root-master 发布及其他节点拓扑仍不支持。详见 `../orp-node-agent/docs/protocol.md`。
 
 ### 实例日志通道
 

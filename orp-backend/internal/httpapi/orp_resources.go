@@ -232,6 +232,7 @@ func requiredORPPermission(r *http.Request) string {
 	}
 	if strings.HasPrefix(path, "/api/orp/geoip-database") ||
 		strings.HasPrefix(path, "/api/orp/alert-channels") ||
+		strings.HasPrefix(path, "/api/orp/consumers") ||
 		strings.HasPrefix(path, "/api/orp/tls-alert-rules") ||
 		strings.HasPrefix(path, "/api/orp/alert-deliveries") ||
 		strings.HasPrefix(path, "/api/orp/tls-alerts") {
@@ -891,6 +892,9 @@ func orpNormalize(kind string, body orpDocument) error {
 		if !ok {
 			return errors.New("路由必须是对象")
 		}
+		if err := validateAllowedHTTPMethods(route["allowedMethods"]); err != nil {
+			return err
+		}
 		if strings.TrimSpace(toString(route["path"])) == "" {
 			return errors.New("路由匹配路径不能为空")
 		}
@@ -911,6 +915,39 @@ func orpNormalize(kind string, body orpDocument) error {
 			maxID++
 			route["id"] = maxID
 		}
+		if route["rateLimitEnabled"] == true {
+			if _, err := rateLimitValue(route["ratePerSecond"], 1, 100000); err != nil {
+				return errors.New("启用限流时 ratePerSecond 必须为 1 到 100000 的整数")
+			}
+			if _, err := rateLimitValue(route["rateLimitBurst"], 0, 1000000); err != nil {
+				return errors.New("启用限流时 rateLimitBurst 必须为 0 到 1000000 的整数")
+			}
+			if value, exists := route["rateLimitNodelay"]; exists {
+				if _, ok := value.(bool); !ok {
+					return errors.New("rateLimitNodelay 必须为布尔值")
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func validateAllowedHTTPMethods(value any) error {
+	if value == nil {
+		return nil
+	}
+	methods, ok := value.([]any)
+	if !ok {
+		return errors.New("allowedMethods 必须是 HTTP 方法数组")
+	}
+	valid := map[string]bool{"GET": true, "HEAD": true, "POST": true, "PUT": true, "PATCH": true, "DELETE": true, "OPTIONS": true}
+	seen := make(map[string]bool, len(methods))
+	for _, value := range methods {
+		method, ok := value.(string)
+		if !ok || !valid[method] || seen[method] {
+			return errors.New("allowedMethods 包含不支持或重复的 HTTP 方法")
+		}
+		seen[method] = true
 	}
 	return nil
 }

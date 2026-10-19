@@ -79,20 +79,31 @@ func (s *Server) login(w http.ResponseWriter, r *http.Request) {
 	writeAuthData(w, http.StatusOK, map[string]string{"accessToken": localToken(request.Username)})
 }
 
-// loginConfig exposes the quickstart credentials so its local login page can be
-// prefilled from the same .env used to initialize the administrator account.
+// loginConfig exposes login-page settings. Credentials are only returned when
+// an operator explicitly enables local-demo prefill; this endpoint is public.
 func (s *Server) loginConfig(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	username := strings.TrimSpace(os.Getenv("ORP_ADMIN_USERNAME"))
 	if username == "" {
 		username = "admin"
 	}
-	password := os.Getenv("ORP_ADMIN_PASSWORD")
-	writeAuthData(w, http.StatusOK, map[string]any{
+	config := map[string]any{
 		"username":       username,
-		"password":       password,
 		"captchaEnabled": s.loginCaptchaEnabled(),
-	})
+	}
+	if loginPrefillCredentialsEnabled() {
+		config["password"] = os.Getenv("ORP_ADMIN_PASSWORD")
+	}
+	writeAuthData(w, http.StatusOK, config)
+}
+
+func loginPrefillCredentialsEnabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("ORP_LOGIN_PREFILL_CREDENTIALS"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func loginCaptchaEnabled() bool {

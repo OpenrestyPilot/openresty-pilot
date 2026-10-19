@@ -17,10 +17,11 @@ import (
 // A release contains the exact bytes checked with nginx -t. Secrets stay
 // encrypted in MySQL and are materialized only into the node's release dir.
 type orpRelease struct {
-	CenterID int64             `json:"centerId"`
-	Config   string            `json:"config"`
-	Files    map[string]string `json:"files"`
-	Digest   string            `json:"digest"`
+	CenterID  int64             `json:"centerId"`
+	ReleaseID string            `json:"releaseId"`
+	Config    string            `json:"config"`
+	Files     map[string]string `json:"files"`
+	Digest    string            `json:"digest"`
 }
 
 var nginxName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_-]*$`)
@@ -204,7 +205,7 @@ func renderReleaseForTargetWithPortOffset(centerID int64, releaseID string, reso
 	if healthPort < 1 || healthPort > 65535 {
 		return orpRelease{}, errors.New("节点探针端口无效")
 	}
-	release := orpRelease{CenterID: centerID, Files: map[string]string{}}
+	release := orpRelease{CenterID: centerID, ReleaseID: releaseID, Files: map[string]string{}}
 	var b strings.Builder
 	b.WriteString("worker_processes auto;\nerror_log /dev/stderr notice;\npid /var/run/nginx.pid;\n")
 	b.WriteString("env RUNTIME_CONTROL_PLANE_URL;\nenv RUNTIME_CENTER_ID;\nenv RUNTIME_POLL_INTERVAL_SECONDS;\n")
@@ -239,6 +240,11 @@ func renderReleaseForTargetWithPortOffset(centerID int64, releaseID string, reso
 	groups := resources["upstream-groups"]
 	for _, group := range groups {
 		if err := renderUpstream(&b, group, false); err != nil {
+			return release, err
+		}
+	}
+	for _, listener := range resources["http-listeners"] {
+		if err := renderRateLimitZones(&b, listener); err != nil {
 			return release, err
 		}
 	}
@@ -281,6 +287,49 @@ func renderReleaseForTargetWithPortOffset(centerID int64, releaseID string, reso
 	return release, nil
 }
 
+// renderRateLimitZones declares per-location shared-memory zones in the http
+// context. NGINX zone names are derived from validated listener and route IDs,
+// so user-controlled paths never enter directive identifiers.
+func renderRateLimitZones(b *strings.Builder, listener orpDocument) error {
+	listenerID, err := resourceNumber(listener["id"])
+	if err != nil || listenerID < 1 {
+		return errors.New("HTTP 监听 ID 无效")
+	}
+	routes, _ := listener["routes"].([]any)
+	for _, value := range routes {
+		route, ok := value.(map[string]any)
+		if !ok || route["rateLimitEnabled"] != true {
+			continue
+		}
+		routeID, err := resourceNumber(route["id"])
+		if err != nil || routeID < 1 {
+			return errors.New("限流路由 ID 无效")
+		}
+		if _, err := rateLimitValue(route["ratePerSecond"], 1, 100000); err != nil {
+			return err
+		}
+		if _, err := rateLimitValue(route["rateLimitBurst"], 0, 1000000); err != nil {
+			return err
+		}
+		zone := fmt.Sprintf("orp_rate_%d_%d", listenerID, routeID)
+		b.WriteString(fmt.Sprintf("  limit_req_zone $binary_remote_addr zone=%s:10m rate=%sr/s;\n", zone, rateLimitString(route["ratePerSecond"])))
+	}
+	return nil
+}
+
+func rateLimitValue(value any, min, max int64) (int64, error) {
+	number, ok := numericFloat(value)
+	if !ok || number != float64(int64(number)) || int64(number) < min || int64(number) > max {
+		return 0, errors.New("请求限流参数超出允许范围")
+	}
+	return int64(number), nil
+}
+
+func rateLimitString(value any) string {
+	number, _ := numericFloat(value)
+	return strconv.FormatInt(int64(number), 10)
+}
+
 func releaseLogFormat(b *strings.Builder, indent string, value any) error {
 	item, _ := value.(map[string]any)
 	if item == nil || toString(item["name"]) == "" {
@@ -301,6 +350,9 @@ func releaseLogFormat(b *strings.Builder, indent string, value any) error {
 func releaseResolvers(b *strings.Builder, resolvers []orpDocument) error {
 	addresses := []string{}
 	for _, resolver := range resolvers {
+		if resolver["enabled"] == false {
+			continue
+		}
 		address, err := safeNginxAtom(toString(resolver["address"]))
 		if err != nil {
 			return err
@@ -309,7 +361,14 @@ func releaseResolvers(b *strings.Builder, resolvers []orpDocument) error {
 		if err != nil {
 			return err
 		}
-		addresses = append(addresses, address+":"+port)
+		entry := address + ":" + port
+		if valid, err := resourceNumber(resolver["cacheTtlSec"]); err == nil && valid > 0 {
+			entry += " valid=" + strconv.FormatInt(valid, 10) + "s"
+		}
+		if timeout, err := resourceNumber(resolver["timeoutSec"]); err == nil && timeout > 0 {
+			entry += " timeout=" + strconv.FormatInt(timeout, 10) + "s"
+		}
+		addresses = append(addresses, entry)
 	}
 	if len(addresses) > 0 {
 		b.WriteString("  resolver " + strings.Join(addresses, " ") + ";\n")
@@ -438,7 +497,21 @@ func renderHTTPServer(b *strings.Builder, listener orpDocument, releaseID string
 		contentType := errorPageResponseType(uri, pageURIs)
 		b.WriteString(fmt.Sprintf("    location = %s { internal; default_type %s; alias /etc/openresty/generated/candidates/%s/%s; }\n", uri, contentType, releaseID, file))
 	}
-	b.WriteString(fmt.Sprintf("    access_log /var/log/nginx/orp-http-%d.access.log orp_http_access;\n", listenerID))
+	accessLog := "/var/log/nginx/orp-http-" + strconv.FormatInt(listenerID, 10) + ".access.log"
+	if legacyPath := toString(listener["legacyAccessLog"]); legacyPath != "" {
+		accessLog, err = safeNginxAtom(legacyPath)
+		if err != nil {
+			return errors.New("legacy HTTP access log path is invalid")
+		}
+	}
+	b.WriteString("    access_log " + accessLog + " orp_http_access;\n")
+	if legacyPath := toString(listener["legacyErrorLog"]); legacyPath != "" {
+		legacyPath, err = safeNginxAtom(legacyPath)
+		if err != nil {
+			return errors.New("legacy HTTP error log path is invalid")
+		}
+		b.WriteString("    error_log " + legacyPath + ";\n")
+	}
 	for _, code := range sortedErrorCodes(pages) {
 		defaultURI := pageURIs[fmt.Sprintf("%d", code)]
 		typeEntries := errorPageTypes(pages, code)
@@ -483,7 +556,7 @@ func renderHTTPServer(b *strings.Builder, listener orpDocument, releaseID string
 	routes, _ := listener["routes"].([]any)
 	for _, value := range routes {
 		route, _ := value.(map[string]any)
-		if err := renderLocation(b, route); err != nil {
+		if err := renderLocation(b, route, listenerID); err != nil {
 			return err
 		}
 	}
@@ -664,7 +737,7 @@ func errorPageContentTypePattern(mediaType string) string {
 	return pattern + `(?:\s*\x3b|$)`
 }
 
-func renderLocation(b *strings.Builder, route map[string]any) error {
+func renderLocation(b *strings.Builder, route map[string]any, listenerID int64) error {
 	if route == nil {
 		return errors.New("路由格式无效")
 	}
@@ -681,6 +754,37 @@ func renderLocation(b *strings.Builder, route map[string]any) error {
 		b.WriteString(match + " ")
 	}
 	b.WriteString(path + " {\n")
+	if rawMethods := route["allowedMethods"]; rawMethods != nil {
+		if err := validateAllowedHTTPMethods(rawMethods); err != nil {
+			return err
+		}
+		methods := rawMethods.([]any)
+		if len(methods) > 0 {
+			allowed := make([]string, 0, len(methods))
+			for _, method := range methods {
+				allowed = append(allowed, method.(string))
+			}
+			b.WriteString("      limit_except " + strings.Join(allowed, " ") + " { deny all; }\n")
+		}
+	}
+	if route["rateLimitEnabled"] == true {
+		routeID, err := resourceNumber(route["id"])
+		if err != nil || routeID < 1 {
+			return errors.New("限流路由 ID 无效")
+		}
+		burst, err := rateLimitValue(route["rateLimitBurst"], 0, 1000000)
+		if err != nil {
+			return err
+		}
+		b.WriteString(fmt.Sprintf("      limit_req zone=orp_rate_%d_%d", listenerID, routeID))
+		if burst > 0 {
+			b.WriteString(fmt.Sprintf(" burst=%d", burst))
+		}
+		if route["rateLimitNodelay"] == true {
+			b.WriteString(" nodelay")
+		}
+		b.WriteString(";\n")
+	}
 	switch toString(route["type"]) {
 	case "proxy":
 		target, err := safeNginxAtom(toString(route["upstream"]))
@@ -829,7 +933,21 @@ func renderStreamServer(b *strings.Builder, service orpDocument, upstream string
 		return errors.New("Stream 协议无效")
 	}
 	b.WriteString(";\n")
-	b.WriteString(fmt.Sprintf("    access_log /var/log/nginx/orp-stream-%d.access.log orp_stream_access;\n", serviceID))
+	accessLog := "/var/log/nginx/orp-stream-" + strconv.FormatInt(serviceID, 10) + ".access.log"
+	if legacyPath := toString(service["legacyAccessLog"]); legacyPath != "" {
+		accessLog, err = safeNginxAtom(legacyPath)
+		if err != nil {
+			return errors.New("legacy Stream access log path is invalid")
+		}
+	}
+	b.WriteString("    access_log " + accessLog + " orp_stream_access;\n")
+	if legacyPath := toString(service["legacyErrorLog"]); legacyPath != "" {
+		legacyPath, err = safeNginxAtom(legacyPath)
+		if err != nil {
+			return errors.New("legacy Stream error log path is invalid")
+		}
+		b.WriteString("    error_log " + legacyPath + ";\n")
+	}
 	b.WriteString("    proxy_pass " + upstream + ";\n")
 	if err := releaseDirectives(b, "    ", service["directives"]); err != nil {
 		return err

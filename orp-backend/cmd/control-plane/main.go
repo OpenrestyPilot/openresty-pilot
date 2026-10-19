@@ -50,9 +50,6 @@ func runServer() error {
 	if err := store.SeedAdmin(database); err != nil {
 		return err
 	}
-	if err := store.ImportLegacyCenters(database); err != nil {
-		return err
-	}
 	if err := store.SeedSettingGroups(database); err != nil {
 		return err
 	}
@@ -73,6 +70,9 @@ func runServer() error {
 
 	httpapi.StartNodeSampler(ctx, database)
 	httpapi.StartTLSExpiryAlertScheduler(ctx, database)
+	// Candidate jobs reuse the fixed local Quickstart validator and the Agent's
+	// allowlisted validate operation. Neither executor activates configuration.
+	httpapi.StartCandidateValidationWorker(ctx, database, httpapi.NewCandidateValidationExecutor(database))
 
 	redisClient := redis.NewClient(&redis.Options{
 		Addr: configuration.RedisAddress, Password: configuration.RedisPassword, DB: configuration.RedisDB,

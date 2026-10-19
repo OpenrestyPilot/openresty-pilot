@@ -21,44 +21,49 @@ type publishedNode struct {
 	ReleaseUUID string
 	Config      string
 	Digest      string
+	Snapshot    []byte
 	FinishedAt  time.Time
 	BatchID     int64
 }
 
 func (s *Server) lastPublishedNode(ctx context.Context, nodeID int64) (publishedNode, error) {
 	var item publishedNode
-	err := s.db.QueryRowContext(ctx, `SELECT c.release_uuid,c.config_text,c.digest,i.finished_at,i.batch_id
+	err := s.db.QueryRowContext(ctx, `SELECT c.release_uuid,c.config_text,c.digest,c.snapshot,i.finished_at,i.batch_id
 FROM orp_publish_item i JOIN orp_publish_candidate c ON c.id=i.candidate_id
-WHERE i.node_id=? AND i.status='success' ORDER BY i.finished_at DESC,i.id DESC LIMIT 1`, nodeID).Scan(&item.ReleaseUUID, &item.Config, &item.Digest, &item.FinishedAt, &item.BatchID)
+WHERE i.node_id=? AND i.status='success' ORDER BY i.finished_at DESC,i.id DESC LIMIT 1`, nodeID).Scan(&item.ReleaseUUID, &item.Config, &item.Digest, &item.Snapshot, &item.FinishedAt, &item.BatchID)
 	return item, err
 }
 
-func (s *Server) currentCenterRelease(ctx context.Context, node orpDocument, centerID int64, releaseID string) (orpRelease, error) {
+func (s *Server) currentCenterRelease(ctx context.Context, node orpDocument, centerID int64, releaseID string) (orpRelease, releaseSnapshot, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
 	if err != nil {
-		return orpRelease{}, err
+		return orpRelease{}, releaseSnapshot{}, err
 	}
 	defer tx.Rollback()
 	resources, singletons, err := loadReleaseInput(tx, centerID)
 	if err != nil {
-		return orpRelease{}, err
+		return orpRelease{}, releaseSnapshot{}, err
 	}
+	snapshot := releaseSnapshot{Resources: resources, Singletons: singletons}
 	target, err := targetForNode(node)
 	if err != nil {
-		return orpRelease{}, err
+		return orpRelease{}, releaseSnapshot{}, err
 	}
 	release, err := renderDemoReleaseForTarget(centerID, releaseID, resources, singletons, target.healthPort)
 	if err != nil {
-		return orpRelease{}, err
+		return orpRelease{}, releaseSnapshot{}, err
 	}
 	// Candidate digests represent the center configuration before local demo
 	// port mapping, so keep that stable while showing the exact node config.
 	canonical, err := renderRelease(centerID, releaseID, resources, singletons)
 	if err != nil {
-		return orpRelease{}, err
+		return orpRelease{}, releaseSnapshot{}, err
 	}
 	release.Digest = canonical.Digest
-	return release, tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return orpRelease{}, releaseSnapshot{}, err
+	}
+	return release, snapshot, nil
 }
 
 func (s *Server) orpPublishSummary(w http.ResponseWriter, r *http.Request) {
@@ -95,7 +100,7 @@ func (s *Server) orpPublishSummary(w http.ResponseWriter, r *http.Request) {
 		}
 		if !pending {
 			lastChange = last.FinishedAt.Format("2006-01-02 15:04:05")
-			current, err := s.currentCenterRelease(r.Context(), node, centerID, last.ReleaseUUID)
+			current, _, err := s.currentCenterRelease(r.Context(), node, centerID, last.ReleaseUUID)
 			pending = err != nil || current.Digest != last.Digest
 			if !pending {
 				observed, err := observedDemoRelease(r.Context(), node)
@@ -139,12 +144,26 @@ func lenPendingGroups(groups []map[string]any) int {
 	return total
 }
 
+const publishConfigAuditKinds = `'http-listeners','stream-services','upstream-groups','dns-resolvers','certificates','http-directives','stream-directives','http-log-format','stream-log-format','http-error-pages'`
+const publishCenterlessAuditKinds = `'http-directives','stream-directives','http-log-format','stream-log-format','http-error-pages'`
+
+func publishAuditScopeSQL() string {
+	return `kind IN (` + publishConfigAuditKinds + `) AND (kind IN (` + publishCenterlessAuditKinds + `) OR JSON_UNQUOTE(JSON_EXTRACT(after_document,'$.centerId'))=? OR JSON_UNQUOTE(JSON_EXTRACT(before_document,'$.centerId'))=?)`
+}
+
+func publishAuditScopeArgs(centerID int64) []any {
+	center := strconv.FormatInt(centerID, 10)
+	return []any{center, center}
+}
+
 func (s *Server) publishEventCount(ctx context.Context, centerID int64, since any) int {
 	if since == nil {
 		return 0
 	}
 	var count int
-	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM orp_audit WHERE created_at>? AND kind IN ('http-listeners','stream-services','upstream-groups','dns-resolvers','certificates','http-directives','stream-directives','http-log-format','stream-log-format','http-error-pages') AND (kind IN ('http-directives','stream-directives','http-log-format','stream-log-format','http-error-pages') OR JSON_UNQUOTE(JSON_EXTRACT(after_document,'$.centerId'))=? OR JSON_UNQUOTE(JSON_EXTRACT(before_document,'$.centerId'))=?)`, since, strconv.FormatInt(centerID, 10), strconv.FormatInt(centerID, 10)).Scan(&count)
+	args := []any{since}
+	args = append(args, publishAuditScopeArgs(centerID)...)
+	_ = s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM orp_audit WHERE created_at>? AND `+publishAuditScopeSQL(), args...).Scan(&count)
 	return count
 }
 
@@ -177,7 +196,14 @@ func (s *Server) orpPublishDiff(w http.ResponseWriter, r *http.Request) {
 	var runningText string
 	var version int64 = 1
 	releaseID := uuid.NewString()
+	var baselineSnapshot *releaseSnapshot
 	if err == nil {
+		baseline, snapshotErr := snapshotConfig(last.Snapshot)
+		if snapshotErr != nil {
+			orpFailure(w, 500, "读取最近下发的资源快照失败")
+			return
+		}
+		baselineSnapshot = &baseline
 		observed, probeErr := observedDemoRelease(r.Context(), node)
 		if probeErr != nil || observed != last.ReleaseUUID {
 			orpFailure(w, 409, "节点实际运行版本与发布记录不一致，请检查节点")
@@ -215,14 +241,18 @@ func (s *Server) orpPublishDiff(w http.ResponseWriter, r *http.Request) {
 		orpFailure(w, 500, "读取节点发布记录失败")
 		return
 	}
-	current, err := s.currentCenterRelease(r.Context(), node, centerID, releaseID)
+	current, currentSnapshot, err := s.currentCenterRelease(r.Context(), node, centerID, releaseID)
 	if err != nil {
 		orpFailure(w, 409, err.Error())
 		return
 	}
 	lines, addCount, delCount := publishTextDiff(runningText, current.Config)
+	resourceDiff := []map[string]any{}
+	if baselineSnapshot != nil {
+		resourceDiff = semanticReleaseDiff(*baselineSnapshot, currentSnapshot)
+	}
 	events := s.publishEvents(r.Context(), centerID, lastPublishedAt)
-	orpReply(w, 200, map[string]any{"centerId": centerID, "centerName": s.publishCenterName(r.Context(), centerID), "node": map[string]any{"id": nodeID, "name": node["name"], "host": node["host"], "status": node["status"]}, "version": version, "lastPublishedAt": lastPublishedAt, "runningText": runningText, "expectedText": current.Config, "diff": lines, "addCount": addCount, "delCount": delCount, "events": events})
+	orpReply(w, 200, map[string]any{"centerId": centerID, "centerName": s.publishCenterName(r.Context(), centerID), "node": map[string]any{"id": nodeID, "name": node["name"], "host": node["host"], "status": node["status"]}, "version": version, "lastPublishedAt": lastPublishedAt, "runningText": runningText, "expectedText": current.Config, "diff": lines, "addCount": addCount, "delCount": delCount, "resourceDiffAvailable": baselineSnapshot != nil, "resourceDiff": resourceDiff, "events": events})
 }
 
 func publishTextDiff(before, after string) ([]map[string]any, int, int) {
@@ -263,12 +293,15 @@ func publishTextDiff(before, after string) ([]map[string]any, int, int) {
 }
 
 func (s *Server) publishEvents(ctx context.Context, centerID int64, since any) []map[string]any {
-	query := `SELECT action,kind,resource_id,created_at FROM orp_audit WHERE (kind IN ('http-directives','stream-directives','http-log-format','stream-log-format','http-error-pages') OR JSON_UNQUOTE(JSON_EXTRACT(after_document,'$.centerId'))=? OR JSON_UNQUOTE(JSON_EXTRACT(before_document,'$.centerId'))=?)`
-	args := []any{strconv.FormatInt(centerID, 10), strconv.FormatInt(centerID, 10)}
-	if since != nil {
-		query += " AND created_at>?"
-		args = append(args, since)
+	// Without a successful publish there is no event baseline. Keep the drawer
+	// consistent with the summary count instead of presenting all historical
+	// center activity as changes since an unknown time.
+	if since == nil {
+		return []map[string]any{}
 	}
+	query := `SELECT action,kind,resource_id,created_at FROM orp_audit WHERE ` + publishAuditScopeSQL() + ` AND created_at>?`
+	args := publishAuditScopeArgs(centerID)
+	args = append(args, since)
 	query += " ORDER BY id DESC LIMIT 100"
 	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {

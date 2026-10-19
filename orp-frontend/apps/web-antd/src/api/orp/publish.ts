@@ -41,6 +41,14 @@ export interface PublishChangeEvent {
   ts: string;
 }
 
+/** 成功下发基线与当前中心配置之间的最终资源级净差异 */
+export interface PublishResourceDiff {
+  action: string;
+  fields?: string[];
+  id: string;
+  kind: string;
+}
+
 /** 单实例配置差异结果 */
 export interface PublishDiffResult {
   addCount: number;
@@ -52,6 +60,8 @@ export interface PublishDiffResult {
   expectedText: string;
   lastPublishedAt: null | string;
   node: { host: string; id: number; name: string; status: string };
+  resourceDiff: PublishResourceDiff[];
+  resourceDiffAvailable: boolean;
   runningText: string;
   version: number;
 }
@@ -71,8 +81,10 @@ export interface PublishBatchItem {
   centerName: string;
   error: null | string;
   finishedAt: null | string;
+  itemId: number;
   nodeId: number;
   nodeName: string;
+  requiresReconciliation: boolean;
   startedAt: null | string;
   status: PublishItemStatus;
   weight: number;
@@ -106,7 +118,7 @@ export interface PublishBatch {
   items: PublishBatchItem[];
   mode: 'all' | 'weighted';
   operator: string;
-  phase: 'aborted' | 'canary_observing' | 'done' | 'running';
+  phase: 'aborted' | 'canary_observing' | 'done' | 'recovery_required' | 'running';
   successCount: number;
   totalBatches: number;
 }
@@ -258,4 +270,25 @@ export function advancePublishBatchApi(
   batchId: number,
 ): Promise<{ id: number; phase: string }> {
   return requestClient.post(`/orp/publish/batches/${batchId}/advance`);
+}
+
+export interface PublishRecoveryConfirmation {
+  itemId: number;
+  observedReleaseUuid: string;
+}
+
+export interface PublishRecoveryContinueResult {
+  alreadyAppliedCount: number;
+  id: number;
+  phase: 'running';
+  resumedCount: number;
+  skippedFailedCount: number;
+}
+
+/** Reconcile and safely resume a batch interrupted by a control-plane restart. */
+export function reconcileContinuePublishBatchApi(
+  batchId: number,
+  confirmations: PublishRecoveryConfirmation[],
+): Promise<PublishRecoveryContinueResult> {
+  return requestClient.post(`/orp/publish/batches/${batchId}/reconcile-continue`, { confirmations });
 }

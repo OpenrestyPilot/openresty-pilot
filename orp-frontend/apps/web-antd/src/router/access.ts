@@ -31,7 +31,7 @@ async function generateAccess(options: GenerateMenuAndRoutesOptions) {
     : assignedCodes;
   const routes = mapTree(options.routes, (route) => {
     if (typeof route.name !== 'string' || route.name === 'Profile') return route;
-    const authority = route.name === 'System' || ['SystemUser', 'SystemRole', 'SystemPerm'].includes(route.name)
+    const authority = route.name === 'System' || ['SystemUser', 'SystemRole', 'SystemPerm', 'SystemConsumers'].includes(route.name)
       ? ['super']
       : [permissionByRoute[route.name] ?? 'orp:read'];
     route.meta = { ...route.meta!, authority };

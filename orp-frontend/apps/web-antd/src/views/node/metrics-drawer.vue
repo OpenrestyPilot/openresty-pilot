@@ -5,15 +5,18 @@ import { ref, watch } from 'vue';
 
 import { useVbenDrawer } from '@vben/common-ui';
 
-import { Descriptions, DescriptionsItem, Progress, Spin, Tag } from 'ant-design-vue';
+import { Descriptions, DescriptionsItem, Progress, Spin, Tag, message } from 'ant-design-vue';
 
-import { getNodeMetricsApi } from '#/api';
+import { consumeNodeMetricEvents } from '#/api';
 
 defineOptions({ name: 'NodeMetricsDrawer' });
 
 const loading = ref(false);
 const node = ref<NodeItem>();
 const metrics = ref<NodeMetrics>();
+const connected = ref(false);
+const updatedAt = ref('');
+let controller: AbortController | undefined;
 
 const STATUS_COLOR: Record<string, string> = {
   maintenance: 'processing',
@@ -27,17 +30,58 @@ const STATUS_TEXT: Record<string, string> = {
   online: '在线',
 };
 
-/** 加载指标数据 */
-async function loadMetrics(id: number) {
-  loading.value = true;
+function formatBandwidth(value: number | undefined) {
+  if (value === undefined || !Number.isFinite(value) || value < 0) return '-';
+  if (value > 0 && value < 0.001) return '< 0.001';
+  return new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 3 }).format(value);
+}
+
+function formatUptime(days: number | undefined) {
+  if (days === undefined || !Number.isFinite(days) || days < 0) return '-';
+  const totalMinutes = Math.floor(days * 24 * 60);
+  const wholeDays = Math.floor(totalMinutes / (24 * 60));
+  const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
+  const minutes = totalMinutes % 60;
+  const parts = [];
+  if (wholeDays) parts.push(`${wholeDays} 天`);
+  if (hours) parts.push(`${hours} 小时`);
+  if (minutes || parts.length === 0) parts.push(`${minutes} 分钟`);
+  return parts.join(' ');
+}
+
+function stopMetricsStream() {
+  controller?.abort();
+  controller = undefined;
+  connected.value = false;
+}
+
+async function startMetricsStream(id: number) {
+  stopMetricsStream();
+  controller = new AbortController();
+  const current = controller;
+  loading.value = !metrics.value;
   try {
-    const res = await getNodeMetricsApi(id);
-    node.value = res.node;
-    metrics.value = res.metrics;
-  } catch {
-    // 错误提示由请求拦截器统一处理
+    await consumeNodeMetricEvents(
+      id,
+      current.signal,
+      (snapshot) => {
+        metrics.value = snapshot;
+        updatedAt.value = new Date().toLocaleTimeString();
+        loading.value = false;
+      },
+      (state) => {
+        connected.value = state;
+      },
+    );
+  } catch (error) {
+    if (!current.signal.aborted) {
+      message.error(error instanceof Error ? error.message : '节点指标连接失败');
+    }
   } finally {
-    loading.value = false;
+    if (controller === current) {
+      loading.value = false;
+      connected.value = false;
+    }
   }
 }
 
@@ -49,8 +93,11 @@ const [Drawer, drawerApi] = useVbenDrawer<{ record?: NodeItem }>({
       if (record) {
         node.value = record;
         metrics.value = undefined;
-        loadMetrics(record.id);
+        updatedAt.value = '';
+        startMetricsStream(record.id);
       }
+    } else {
+      stopMetricsStream();
     }
   },
   title: '节点指标',
@@ -68,6 +115,14 @@ watch(
 
 <template>
   <Drawer>
+    <div class="mb-3 flex items-center justify-between text-xs">
+      <span>
+        <Tag :color="connected ? 'success' : 'default'">
+          {{ connected ? 'SSE 实时连接中 · 1 秒刷新' : '正在连接指标流…' }}
+        </Tag>
+      </span>
+      <span v-if="updatedAt" class="text-gray-400">最近更新 {{ updatedAt }}</span>
+    </div>
     <Spin :spinning="loading">
       <div class="flex flex-col gap-4">
         <Descriptions
@@ -128,10 +183,10 @@ watch(
             {{ metrics?.connections.toLocaleString() ?? '-' }}
           </DescriptionsItem>
           <DescriptionsItem label="入带宽 (Mbps)">
-            {{ metrics?.bandwidthInMbps ?? '-' }}
+            {{ formatBandwidth(metrics?.bandwidthInMbps) }}
           </DescriptionsItem>
           <DescriptionsItem label="出带宽 (Mbps)">
-            {{ metrics?.bandwidthOutMbps ?? '-' }}
+            {{ formatBandwidth(metrics?.bandwidthOutMbps) }}
           </DescriptionsItem>
           <DescriptionsItem label="24h 请求量">
             {{ metrics?.requestTotal24h.toLocaleString() ?? '-' }}
@@ -140,13 +195,10 @@ watch(
             {{ metrics ? `${metrics.errorRatePercent}%` : '-' }}
           </DescriptionsItem>
           <DescriptionsItem label="持续运行" :span="2">
-            {{ metrics ? `${metrics.uptimeDays} 天` : '-' }}
+            {{ formatUptime(metrics?.uptimeDays) }}
           </DescriptionsItem>
         </Descriptions>
       </div>
     </Spin>
-    <span v-if="!loading && metrics" class="mt-2 block text-xs text-gray-400">
-      指标为 Mock 演示数据，对接真实控制面后展示实时采集值。
-    </span>
   </Drawer>
 </template>

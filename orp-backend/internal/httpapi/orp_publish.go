@@ -124,7 +124,7 @@ func (s *Server) freezeCandidate(ctx context.Context, actor string, centerID int
 			return candidate, release, errors.New("冻结快照时节点中心已变化")
 		}
 		node["id"] = id
-		if _, err := targetForNode(node); err != nil {
+		if _, err := targetForNode(node); err != nil && !nodeHasAgent(node) {
 			return candidate, release, err
 		}
 		if directives, ok := node["directives"].([]any); ok && len(directives) > 0 {
@@ -198,19 +198,32 @@ func (s *Server) orpPublishPrecheck(w http.ResponseWriter, r *http.Request) {
 		centerPassed := true
 		for _, nodeID := range groups[centerID] {
 			target, targetErr := targetForNode(frozen.Nodes[nodeID])
-			if targetErr != nil {
+			agentTarget := targetErr != nil && nodeHasAgent(frozen.Nodes[nodeID])
+			if targetErr != nil && !agentTarget {
 				allPassed, centerPassed = false, false
 				orpFailure(w, 409, targetErr.Error())
 				return
 			}
-			nodeRelease, renderErr := renderDemoReleaseForTarget(centerID, candidate.ReleaseUUID, frozen.Resources, frozen.Singletons, target.healthPort)
+			var nodeRelease orpRelease
+			var renderErr error
+			if agentTarget {
+				nodeRelease, renderErr = renderReleaseForTarget(centerID, candidate.ReleaseUUID, frozen.Resources, frozen.Singletons, agentProbePort)
+			} else {
+				nodeRelease, renderErr = renderDemoReleaseForTarget(centerID, candidate.ReleaseUUID, frozen.Resources, frozen.Singletons, target.healthPort)
+			}
 			if renderErr != nil {
 				allPassed, centerPassed = false, false
 				orpFailure(w, 409, "无法为节点渲染候选配置: "+renderErr.Error())
 				return
 			}
-			ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-			output, checkErr := validateDemoRelease(ctx, frozen.Nodes[nodeID], candidate.ReleaseUUID, nodeRelease)
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+			var output string
+			var checkErr error
+			if agentTarget {
+				output, checkErr = s.validateAgentCandidate(ctx, nodeID, candidate, actor)
+			} else {
+				output, checkErr = validateDemoRelease(ctx, frozen.Nodes[nodeID], candidate.ReleaseUUID, nodeRelease)
+			}
 			cancel()
 			passed := checkErr == nil
 			if !passed {
@@ -218,6 +231,9 @@ func (s *Server) orpPublishPrecheck(w http.ResponseWriter, r *http.Request) {
 				output += "\n" + checkErr.Error()
 			}
 			command := demoNginx + " -t -c " + demoConfigRoot + "/candidates/" + candidate.ReleaseUUID + "/nginx.conf"
+			if agentTarget {
+				command = "Agent validate: fixed candidate nginx.conf (no shell or task-supplied paths)"
+			}
 			baseline, baselineErr := s.lastPublishedNode(r.Context(), nodeID)
 			if baselineErr != nil && !errors.Is(baselineErr, sql.ErrNoRows) {
 				orpFailure(w, 500, "读取节点发布基线失败")
@@ -411,11 +427,17 @@ func (s *Server) orpPublishCreate(w http.ResponseWriter, r *http.Request) {
 		releases := make(map[int64]orpRelease, len(targetIDs))
 		for _, nodeID := range targetIDs {
 			target, err := targetForNode(snapshot.Nodes[nodeID])
-			if err != nil {
+			agentTarget := err != nil && nodeHasAgent(snapshot.Nodes[nodeID])
+			if err != nil && !agentTarget {
 				orpFailure(w, 409, err.Error())
 				return
 			}
-			release, err := renderDemoReleaseForTarget(centerID, candidate.ReleaseUUID, resources, singletons, target.healthPort)
+			var release orpRelease
+			if agentTarget {
+				release, err = renderReleaseForTarget(centerID, candidate.ReleaseUUID, resources, singletons, agentProbePort)
+			} else {
+				release, err = renderDemoReleaseForTarget(centerID, candidate.ReleaseUUID, resources, singletons, target.healthPort)
+			}
 			if err != nil {
 				orpFailure(w, 409, "无法为节点渲染候选配置: "+err.Error())
 				return
@@ -526,7 +548,7 @@ func (s *Server) runDemoBatch(batchID int64, ids []int64, nodes map[int64]orpDoc
 					s.stopRemainingDemoBatch(batchID, "上一批节点下发失败，停止后续批次")
 					break
 				}
-				if canaryEnabled && currentGroup == 0 && batchCount > 1 && !s.waitDemoCanary(batchID, nodes, selectedByCenter, ordered, indexes, waitSeconds) {
+				if canaryEnabled && currentGroup == 0 && batchCount > 1 && !s.waitDemoCanary(batchID, actor, nodes, selectedByCenter, ordered, indexes, waitSeconds) {
 					break
 				}
 			}
@@ -534,23 +556,33 @@ func (s *Server) runDemoBatch(batchID int64, ids []int64, nodes map[int64]orpDoc
 			_, _ = s.db.Exec("UPDATE orp_publish_batch SET current_batch_index=? WHERE id=? AND phase='running'", group, batchID)
 		}
 		var phase, itemStatus string
+		var itemID int64
 		if err := s.db.QueryRow("SELECT phase FROM orp_publish_batch WHERE id=?", batchID).Scan(&phase); err != nil || phase == "aborted" {
 			break
 		}
-		if err := s.db.QueryRow("SELECT status FROM orp_publish_item WHERE batch_id=? AND node_id=?", batchID, nodeID).Scan(&itemStatus); err != nil || itemStatus != "queued" {
+		if err := s.db.QueryRow("SELECT id,status FROM orp_publish_item WHERE batch_id=? AND node_id=?", batchID, nodeID).Scan(&itemID, &itemStatus); err != nil || itemStatus != "queued" {
 			continue
 		}
 		centerID, _ := resourceNumber(nodes[nodeID]["centerId"])
 		selected := selectedByCenter[centerID]
 		previous, _ := s.lastPublishedNode(context.Background(), nodeID)
+		var frozenBaseline sql.NullString
+		if err := s.db.QueryRow("SELECT previous_release_uuid FROM orp_publish_item WHERE id=? AND batch_id=?", itemID, batchID).Scan(&frozenBaseline); err == nil && frozenBaseline.Valid {
+			previous.ReleaseUUID = frozenBaseline.String
+		}
 		if _, err := s.db.Exec("UPDATE orp_publish_item SET status='deploying',previous_release_uuid=?,started_at=NOW(6) WHERE batch_id=? AND node_id=?", nullRelease(previous.ReleaseUUID), batchID, nodeID); err != nil {
 			log.Printf("publish batch %d node %d: start task: %v", batchID, nodeID, err)
 			_, _ = s.db.Exec("UPDATE orp_publish_item SET status='failed',error_text='无法开始节点下发任务',finished_at=NOW(6) WHERE batch_id=? AND node_id=?", batchID, nodeID)
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 		release := selected.releases[nodeID]
-		_, err := activateDemoRelease(ctx, nodes[nodeID], selected.candidate.ReleaseUUID, release)
+		var err error
+		if _, targetErr := targetForNode(nodes[nodeID]); targetErr != nil && nodeHasAgent(nodes[nodeID]) {
+			_, err = s.publishAgentCandidate(ctx, nodeID, selected.candidate, actor, batchID, itemID)
+		} else {
+			_, err = activateDemoRelease(ctx, nodes[nodeID], selected.candidate.ReleaseUUID, release)
+		}
 		cancel()
 		status := "success"
 		message := ""
@@ -588,13 +620,16 @@ func (s *Server) runDemoBatch(batchID int64, ids []int64, nodes map[int64]orpDoc
 	if _, err := s.db.Exec("UPDATE orp_publish_batch SET phase='done',finished_at=NOW(6) WHERE id=? AND phase='running'", batchID); err != nil {
 		log.Printf("publish batch %d: finish batch: %v", batchID, err)
 	}
+	if err := syncConfigurationCandidatePublishState(context.Background(), s.db, batchID); err != nil {
+		log.Printf("publish batch %d: sync source candidate state: %v", batchID, err)
+	}
 }
 
 func (s *Server) stopRemainingDemoBatch(batchID int64, reason string) {
 	_, _ = s.db.Exec("UPDATE orp_publish_item SET status='aborted',error_text=?,finished_at=NOW(6) WHERE batch_id=? AND status='queued'", reason, batchID)
 }
 
-func (s *Server) waitDemoCanary(batchID int64, nodes map[int64]orpDocument, selected map[int64]selectedPublish, ordered []int64, indexes map[int64]int, seconds int) bool {
+func (s *Server) waitDemoCanary(batchID int64, actor string, nodes map[int64]orpDocument, selected map[int64]selectedPublish, ordered []int64, indexes map[int64]int, seconds int) bool {
 	deadline := time.Now().Add(time.Duration(seconds) * time.Second)
 	_, err := s.db.Exec("UPDATE orp_publish_batch SET phase='canary_observing',canary_observe_until=? WHERE id=? AND phase='running'", deadline, batchID)
 	if err != nil {
@@ -615,10 +650,20 @@ func (s *Server) waitDemoCanary(batchID int64, nodes map[int64]orpDocument, sele
 			continue
 		}
 		centerID, _ := resourceNumber(nodes[id]["centerId"])
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		observed, err := observedDemoRelease(ctx, nodes[id])
-		cancel()
-		if err != nil || observed != selected[centerID].candidate.ReleaseUUID {
+		var probeErr error
+		if _, targetErr := targetForNode(nodes[id]); targetErr != nil && nodeHasAgent(nodes[id]) {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+			_, probeErr = s.probeAgentCandidate(ctx, id, selected[centerID].candidate, actor)
+			cancel()
+		} else {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			observed, err := observedDemoRelease(ctx, nodes[id])
+			cancel()
+			if err != nil || observed != selected[centerID].candidate.ReleaseUUID {
+				probeErr = errors.New("demo node active release differs from candidate")
+			}
+		}
+		if probeErr != nil {
 			s.stopRemainingDemoBatch(batchID, "金丝雀节点版本探针异常，停止后续批次")
 			_, _ = s.db.Exec("UPDATE orp_publish_batch SET phase='done',finished_at=NOW(6) WHERE id=?", batchID)
 			return false
@@ -659,7 +704,7 @@ func (s *Server) orpPublishBatch(w http.ResponseWriter, r *http.Request) {
 		orpFailure(w, 404, "批次不存在")
 		return
 	}
-	rows, err := s.db.QueryContext(r.Context(), "SELECT node_id,center_id,batch_index,weight,status,error_text,started_at,finished_at FROM orp_publish_item WHERE batch_id=? ORDER BY id", id)
+	rows, err := s.db.QueryContext(r.Context(), "SELECT id,node_id,center_id,batch_index,weight,status,error_text,started_at,finished_at FROM orp_publish_item WHERE batch_id=? ORDER BY id", id)
 	if err != nil {
 		orpFailure(w, 500, "读取批次任务失败")
 		return
@@ -668,12 +713,12 @@ func (s *Server) orpPublishBatch(w http.ResponseWriter, r *http.Request) {
 	items := []map[string]any{}
 	successCount, failCount, abortedCount := 0, 0, 0
 	for rows.Next() {
-		var nodeID, centerID int64
+		var itemID, nodeID, centerID int64
 		var index, weight int
 		var status string
 		var errorText sql.NullString
 		var started, finished sql.NullTime
-		if err := rows.Scan(&nodeID, &centerID, &index, &weight, &status, &errorText, &started, &finished); err != nil {
+		if err := rows.Scan(&itemID, &nodeID, &centerID, &index, &weight, &status, &errorText, &started, &finished); err != nil {
 			orpFailure(w, 500, "读取批次任务失败")
 			return
 		}
@@ -687,7 +732,8 @@ func (s *Server) orpPublishBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		var nodeName string
 		_ = s.db.QueryRowContext(r.Context(), "SELECT JSON_UNQUOTE(JSON_EXTRACT(document,'$.name')) FROM orp_resource WHERE kind='nodes' AND id=?", nodeID).Scan(&nodeName)
-		items = append(items, map[string]any{"nodeId": nodeID, "nodeName": nodeName, "centerId": centerID, "centerName": s.publishCenterName(r.Context(), centerID), "batchIndex": index, "weight": weight, "status": status, "error": nullString(errorText), "startedAt": nullTime(started), "finishedAt": nullTime(finished)})
+		requiresReconciliation := phase == "recovery_required" && (status == "failed" || status == "aborted" && errorText.Valid && errorText.String == recoveryQueuedMessage)
+		items = append(items, map[string]any{"itemId": itemID, "requiresReconciliation": requiresReconciliation, "nodeId": nodeID, "nodeName": nodeName, "centerId": centerID, "centerName": s.publishCenterName(r.Context(), centerID), "batchIndex": index, "weight": weight, "status": status, "error": nullString(errorText), "startedAt": nullTime(started), "finishedAt": nullTime(finished)})
 	}
 	if err := rows.Err(); err != nil {
 		orpFailure(w, 500, "读取批次任务失败")
@@ -745,7 +791,7 @@ func (s *Server) orpPublishBatch(w http.ResponseWriter, r *http.Request) {
 		}
 		remaining = seconds
 	}
-	orpReply(w, 200, map[string]any{"id": id, "operator": actor, "mode": mode, "phase": phase, "createdAt": created.UnixMilli(), "currentBatchIndex": currentIndex, "totalBatches": totalBatches, "batchGroups": groups, "canary": map[string]any{"enabled": canaryEnabled, "remaining": remaining, "waitSeconds": waitSeconds}, "done": phase == "done" || phase == "aborted", "items": items, "successCount": successCount, "failCount": failCount, "abortedCount": abortedCount})
+	orpReply(w, 200, map[string]any{"id": id, "operator": actor, "mode": mode, "phase": phase, "createdAt": created.UnixMilli(), "currentBatchIndex": currentIndex, "totalBatches": totalBatches, "batchGroups": groups, "canary": map[string]any{"enabled": canaryEnabled, "remaining": remaining, "waitSeconds": waitSeconds}, "done": phase == "done" || phase == "aborted" || phase == "recovery_required", "recoveryRequired": phase == "recovery_required", "items": items, "successCount": successCount, "failCount": failCount, "abortedCount": abortedCount})
 }
 
 func nullString(value sql.NullString) any {
@@ -766,11 +812,13 @@ func nullTime(value sql.NullTime) any {
 // deployment merely because the control process restarted.
 func RecoverPendingPublishes(db *sql.DB) error {
 	type interrupted struct {
-		id, nodeID        int64
-		status, releaseID string
-		nodeJSON          []byte
+		id, nodeID           int64
+		status, releaseID    string
+		nodeJSON             []byte
+		taskID               sql.NullString
+		batchID, candidateID int64
 	}
-	rows, err := db.Query(`SELECT i.id,i.node_id,i.status,c.release_uuid,n.document
+	rows, err := db.Query(`SELECT i.id,i.node_id,i.status,c.release_uuid,n.document,i.agent_task_id,i.batch_id,i.candidate_id
 		FROM orp_publish_item i
 		JOIN orp_publish_candidate c ON c.id=i.candidate_id
 		JOIN orp_resource n ON n.id=i.node_id AND n.kind='nodes'
@@ -781,7 +829,7 @@ func RecoverPendingPublishes(db *sql.DB) error {
 	pending := []interrupted{}
 	for rows.Next() {
 		var item interrupted
-		if err := rows.Scan(&item.id, &item.nodeID, &item.status, &item.releaseID, &item.nodeJSON); err != nil {
+		if err := rows.Scan(&item.id, &item.nodeID, &item.status, &item.releaseID, &item.nodeJSON, &item.taskID, &item.batchID, &item.candidateID); err != nil {
 			rows.Close()
 			return err
 		}
@@ -797,14 +845,30 @@ func RecoverPendingPublishes(db *sql.DB) error {
 		status, message string
 	}
 	recovered := make([]recoveredItem, 0, len(pending))
+	manualReviewBatches := map[int64]bool{}
+	recoveredBatches := map[int64]bool{}
 	for _, item := range pending {
+		recoveredBatches[item.batchID] = true
 		if item.status == "queued" {
 			recovered = append(recovered, recoveredItem{item.id, "aborted", "控制面重启，尚未开始的下发已停止"})
+			manualReviewBatches[item.batchID] = true
 			continue
 		}
 		var node orpDocument
 		if err := json.Unmarshal(item.nodeJSON, &node); err != nil {
 			recovered = append(recovered, recoveredItem{item.id, "failed", "控制面重启后无法读取节点信息，发布结果未知"})
+			manualReviewBatches[item.batchID] = true
+			continue
+		}
+		if _, targetErr := targetForNode(node); targetErr != nil && nodeHasAgent(node) {
+			status, message, err := recoverAgentPublishItem(db, item)
+			if err != nil {
+				return err
+			}
+			recovered = append(recovered, recoveredItem{item.id, status, message})
+			if status == "failed" {
+				manualReviewBatches[item.batchID] = true
+			}
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -814,6 +878,7 @@ func RecoverPendingPublishes(db *sql.DB) error {
 			recovered = append(recovered, recoveredItem{item.id, "success", ""})
 		} else {
 			recovered = append(recovered, recoveredItem{item.id, "failed", "控制面重启后无法确认候选已加载；请重新预检"})
+			manualReviewBatches[item.batchID] = true
 		}
 	}
 	tx, err := db.Begin()
@@ -826,8 +891,94 @@ func RecoverPendingPublishes(db *sql.DB) error {
 			return err
 		}
 	}
-	if _, err := tx.Exec("UPDATE orp_publish_batch SET phase='done',finished_at=NOW(6) WHERE phase IN ('running','canary_observing')"); err != nil {
+	for batchID := range recoveredBatches {
+		if _, err := tx.Exec("UPDATE orp_publish_batch SET phase='done',finished_at=NOW(6) WHERE id=? AND phase IN ('running','canary_observing')", batchID); err != nil {
+			return err
+		}
+	}
+	for batchID := range manualReviewBatches {
+		if _, err := tx.Exec("UPDATE orp_publish_batch SET phase='recovery_required',finished_at=NOW(6) WHERE id=? AND phase IN ('running','canary_observing')", batchID); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
 		return err
 	}
-	return tx.Commit()
+	for batchID := range recoveredBatches {
+		if err := syncConfigurationCandidatePublishState(context.Background(), db, batchID); err != nil {
+			return err
+		}
+	}
+	for batchID := range manualReviewBatches {
+		if err := syncConfigurationCandidatePublishState(context.Background(), db, batchID); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// recoverAgentPublishItem reconciles only a task that is transactionally linked
+// to its item. A queued task can be safely retired if recovery wins the row lock;
+// any claimed, expired, failed, or unlinked task may have activated the release
+// and is therefore left for operator inspection without replay.
+func recoverAgentPublishItem(db *sql.DB, item struct {
+	id, nodeID           int64
+	status, releaseID    string
+	nodeJSON             []byte
+	taskID               sql.NullString
+	batchID, candidateID int64
+}) (string, string, error) {
+	unknown := "控制面重启后 Agent 发布结果未知；已暂停批次，不会自动重发。请核对节点活动版本与 Agent 任务结果后人工处置。"
+	if !item.taskID.Valid || item.taskID.String == "" {
+		_, err := db.Exec("UPDATE orp_publish_item SET status='failed',error_text=?,finished_at=NOW(6) WHERE id=? AND status IN ('deploying','validating')", unknown, item.id)
+		return "failed", unknown, err
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return "failed", "", err
+	}
+	defer tx.Rollback()
+	var taskNode, taskBatch, taskItem int64
+	var operation, taskStatus string
+	var resultStatus sql.NullString
+	err = tx.QueryRow(`SELECT node_id,operation,status,result_status,publish_batch_id,publish_item_id
+		FROM orp_agent_task WHERE id=? FOR UPDATE`, item.taskID.String).Scan(&taskNode, &operation, &taskStatus, &resultStatus, &taskBatch, &taskItem)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			_, updateErr := tx.Exec("UPDATE orp_publish_item SET status='failed',error_text=?,finished_at=NOW(6) WHERE id=? AND status IN ('deploying','validating')", unknown, item.id)
+			if updateErr != nil {
+				return "failed", "", updateErr
+			}
+			return "failed", unknown, tx.Commit()
+		}
+		return "failed", "", err
+	}
+	kind, candidateID, validOperation := parseAgentCandidateOperation(operation)
+	associationValid := taskNode == item.nodeID && taskBatch == item.batchID && taskItem == item.id && kind == "publish" && validOperation && candidateID == item.candidateID
+	if !associationValid {
+		unknown = "Agent 任务与发布批次/节点/候选关联不匹配；已暂停批次，请人工核对。"
+	}
+	result := "failed"
+	message := unknown
+	if taskStatus == "queued" {
+		update, updateErr := tx.Exec("UPDATE orp_agent_task SET status='expired',error_text='控制面重启，未领取的发布任务已安全取消' WHERE id=? AND status='queued'", item.taskID.String)
+		if updateErr != nil {
+			return "failed", "", updateErr
+		}
+		if affected, _ := update.RowsAffected(); affected == 1 && associationValid {
+			result, message = "aborted", "控制面重启，Agent 发布任务尚未领取，已安全取消"
+		}
+	} else if taskStatus == "completed" && resultStatus.Valid && resultStatus.String == "succeeded" && associationValid {
+		result, message = "success", ""
+		if _, err := tx.Exec("UPDATE orp_resource SET document=JSON_SET(document,'$.activeVersion',?) WHERE kind='nodes' AND id=?", item.releaseID, item.nodeID); err != nil {
+			return "failed", "", err
+		}
+	}
+	if _, err := tx.Exec("UPDATE orp_publish_item SET status=?,error_text=?,finished_at=NOW(6) WHERE id=? AND status IN ('deploying','validating')", result, message, item.id); err != nil {
+		return "failed", "", err
+	}
+	if err := tx.Commit(); err != nil {
+		return "failed", "", err
+	}
+	return result, message, nil
 }

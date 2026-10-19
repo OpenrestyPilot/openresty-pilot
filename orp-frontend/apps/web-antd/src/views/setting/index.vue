@@ -404,7 +404,7 @@ function onDelete(row: OrpSetting) {
             </Tag>
           </div>
           <p class="text-muted-foreground mt-1 text-sm">
-            导入 MaxMind GeoLite2 City 或 GeoIP2 City 的 .mmdb 文件。校验通过后，大屏会在下一次 SSE 更新时显示来源点和流线。
+            导入 MaxMind GeoLite2/GeoIP2 City 或 DB-IP City Lite 的 .mmdb 文件。DB-IP 数据按许可需要在显示位置结果的大屏页提供来源链接；校验通过后地图会在下一次 SSE 更新时显示来源点和流线。
           </p>
           <div v-if="geoIPLoading" class="text-muted-foreground mt-2 text-xs">正在读取数据库状态…</div>
           <div v-else-if="geoIPStatus?.state === 'ready'" class="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">

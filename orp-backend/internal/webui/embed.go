@@ -1,7 +1,9 @@
 package webui
 
 import (
+	"bytes"
 	"embed"
+	"io"
 	"io/fs"
 	"net/http"
 	"path"
@@ -50,8 +52,22 @@ func Handler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		fallback := r.Clone(r.Context())
-		fallback.URL.Path = "/index.html"
-		files.ServeHTTP(w, fallback)
+		index, err := frontend.Open("index.html")
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		defer index.Close()
+		content, err := io.ReadAll(index)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		info, err := index.Stat()
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		http.ServeContent(w, r, "index.html", info.ModTime(), bytes.NewReader(content))
 	})
 }

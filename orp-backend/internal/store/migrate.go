@@ -157,6 +157,9 @@ func validateSchema(ctx context.Context, connection *sql.Conn) error {
 		"http_upstream_target", "tls_certificate", "dns_resolver_configuration", "http_configuration",
 		"orp_alert_channel", "orp_tls_alert_rule", "orp_tls_alert_rule_channel", "orp_alert_delivery",
 		"orp_agent_heartbeat", "orp_agent_task", "orp_agent_token",
+		"orp_api_consumer", "orp_api_key",
+		"orp_configuration_candidate", "orp_configuration_candidate_diff", "orp_validation_attempt", "orp_validation_job", "orp_validation_center_policy",
+		"legacy_resource_import_report",
 	} {
 		var exists bool
 		if err := connection.QueryRowContext(ctx, `SELECT EXISTS(

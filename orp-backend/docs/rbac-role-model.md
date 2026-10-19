@@ -21,7 +21,7 @@
 | --- | --- |
 | `orp:read` | 读取平台配置和运行信息 |
 | `orp:config:write` | 创建、修改和删除配置资源 |
-| `orp:publish` | 执行发布预检、发布、分批推进、中止和回滚 |
+| `orp:publish` | 执行发布预检、发布、分批推进、中止、回滚及人工核对后的恢复续跑 |
 | `orp:node:operate` | 修改节点运行状态、登记 Agent 证书和触发重载 |
 | `orp:system:manage` | 管理告警通道、TLS 告警规则和 GeoIP 数据库 |
 | `orp:audit:read` | 读取审计日志 |

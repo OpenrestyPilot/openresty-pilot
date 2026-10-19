@@ -41,7 +41,7 @@ type geoFlow struct {
 func (s *Server) dashboardGeography(events []accessEvent) map[string]any {
 	centerRowsOut := []map[string]any{}
 	empty := func(state, reason string) map[string]any {
-		return map[string]any{"state": state, "reason": reason, "sampleLimit": maxGeoSampleEvents, "points": []any{}, "centers": centerRowsOut, "flows": []any{}, "unknownRequests": 0}
+		return map[string]any{"state": state, "reason": reason, "databaseType": "", "sampleLimit": maxGeoSampleEvents, "points": []any{}, "centers": centerRowsOut, "flows": []any{}, "unknownRequests": 0}
 	}
 	nodes, err := s.orpLoad(context.Background(), "nodes")
 	if err != nil {
@@ -160,7 +160,7 @@ func (s *Server) dashboardGeography(events []accessEvent) map[string]any {
 	if len(flowRows) > 500 {
 		flowRows = flowRows[:500]
 	}
-	return map[string]any{"state": "ready", "sampledEvents": len(events), "sampleLimit": maxGeoSampleEvents, "points": pointRows, "centers": centerRowsOut, "flows": flowRows, "unknownRequests": unknown}
+	return map[string]any{"state": "ready", "sampledEvents": len(events), "sampleLimit": maxGeoSampleEvents, "databaseType": reader.Metadata.DatabaseType, "points": pointRows, "centers": centerRowsOut, "flows": flowRows, "unknownRequests": unknown}
 }
 
 func numericFloat(value any) (float64, bool) {

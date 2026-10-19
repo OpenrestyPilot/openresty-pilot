@@ -41,6 +41,7 @@ const loadError = ref(false);
 const streamError = ref('大盘实时数据连接失败，正在重试；也可手动重新连接');
 const lastUpdated = ref('');
 const streamConnected = ref(false);
+const streamPending = ref(false);
 
 const RANGE_OPTIONS: { label: string; value: DashboardRange }[] = [
   { label: '今日', value: 'today' },
@@ -88,13 +89,20 @@ async function runStream(controller: AbortController, generation: number) {
         loadError.value = false;
         streamError.value = '';
         streamConnected.value = true;
+        streamPending.value = Boolean(snapshot.partial);
       }, (message) => {
         loadError.value = true;
         streamError.value = message;
+      }, () => {
+        streamPending.value = true;
+        streamConnected.value = true;
+        loading.value = true;
+        loadError.value = false;
       });
     } catch (error) {
       if (signal.aborted) break;
       streamConnected.value = false;
+      streamPending.value = false;
       loading.value = false;
       loadError.value = true;
       if (error instanceof Error) streamError.value = error.message;
@@ -113,6 +121,7 @@ function startStream(force = false) {
   loading.value = true;
   loadError.value = false;
   streamConnected.value = false;
+  streamPending.value = false;
   void runStream(streamController, streamGeneration);
 }
 
@@ -142,13 +151,14 @@ onBeforeUnmount(() => {
 });
 
 onMounted(async () => {
+  // Establish the data stream immediately; center options can load in parallel.
+  startStream();
   try {
     const page = await listCentersApi({ page: 1, pageSize: 50 });
     centers.value = (page?.items ?? []).map((c) => ({ id: c.id, name: c.name }));
   } catch {
     /* 保留空列表 */
   }
-  startStream();
 });
 
 onActivated(startStream);
@@ -427,8 +437,8 @@ const LB_TEXT: Record<string, string> = {
           <span v-if="lastUpdated" class="ml-2 text-xs">
             更新于 {{ lastUpdated }}
           </span>
-          <Tag class="ml-2" :color="streamConnected ? 'success' : 'default'">
-            {{ streamConnected ? 'SSE 实时推送中' : 'SSE 正在连接' }}
+          <Tag class="ml-2" :color="streamPending ? 'processing' : streamConnected ? 'success' : 'default'">
+            {{ streamPending ? '首屏统计已到，正在补齐节点与上游探测' : streamConnected ? 'SSE 实时推送中' : 'SSE 正在连接' }}
           </Tag>
         </div>
         <div class="flex flex-wrap items-center gap-2">

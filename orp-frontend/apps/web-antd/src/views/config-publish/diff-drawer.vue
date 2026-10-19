@@ -50,6 +50,28 @@ const ACTION_COLOR: Record<string, string> = {
   rollback: 'orange',
   update: 'blue',
 };
+const RESOURCE_ACTION_TEXT: Record<string, string> = {
+  create: '新增',
+  delete: '删除',
+  update: '修改',
+};
+const RESOURCE_ACTION_COLOR: Record<string, string> = {
+  create: 'green',
+  delete: 'red',
+  update: 'blue',
+};
+const RESOURCE_TEXT: Record<string, string> = {
+  certificates: 'TLS 证书',
+  'dns-resolvers': 'DNS 解析器',
+  'http-error-pages': 'HTTP 错误页',
+  'http-listeners': 'HTTP 监听器',
+  'http-log-format': 'HTTP 日志格式',
+  'http-directives': 'HTTP 指令',
+  'stream-services': 'Stream 服务',
+  'stream-log-format': 'Stream 日志格式',
+  'stream-directives': 'Stream 指令',
+  'upstream-groups': '上游服务器组',
+};
 
 const [Drawer, drawerApi] = useVbenDrawer<{ nodeId?: number }>({
   class: 'w-[880px]',
@@ -251,11 +273,58 @@ function charClass(t: -1 | 0 | 1) {
           <Tag :color="result.delCount ? 'red' : 'default'">
             期望删除 {{ result.delCount }} 行
           </Tag>
+          <Tag color="purple">
+            文本差异共 {{ result.addCount + result.delCount }} 行
+          </Tag>
+          <Tag v-if="result.resourceDiffAvailable" color="cyan">
+            资源净差异 {{ result.resourceDiff.length }} 项
+          </Tag>
         </span>
       </div>
 
+      <Alert
+        v-if="!result.lastPublishedAt"
+        class="mb-3"
+        message="该实例尚无成功下发基线；下方差异以实例初始配置为基准，首次成功下发后开始统计配置变更事件。"
+        show-icon
+        type="info"
+      />
+
+      <div v-if="result.resourceDiffAvailable" class="mb-4">
+        <div class="mb-2 font-medium">
+          发布后资源净差异（{{ result.resourceDiff.length }}）
+        </div>
+        <div
+          v-if="result.resourceDiff.length"
+          class="flex flex-col gap-1.5"
+        >
+          <div
+            v-for="(change, ix) in result.resourceDiff"
+            :key="`${change.kind}-${change.id}-${ix}`"
+            class="flex flex-wrap items-center gap-2 rounded border border-gray-100 bg-gray-50 px-3 py-1.5 text-xs dark:border-gray-700 dark:bg-gray-900"
+          >
+            <Tag class="!m-0" :color="RESOURCE_ACTION_COLOR[change.action]">
+              {{ RESOURCE_ACTION_TEXT[change.action] ?? change.action }}
+            </Tag>
+            <Tag class="!m-0" color="geekblue">
+              {{ RESOURCE_TEXT[change.kind] ?? change.kind }}
+            </Tag>
+            <span class="font-mono">#{{ change.id }}</span>
+            <span v-if="change.fields?.length" class="text-gray-500">
+              变更字段：{{ change.fields.join('、') }}
+            </span>
+          </div>
+        </div>
+        <div v-else class="text-xs text-gray-500">
+          当前资源配置与最近一次成功下发时一致。
+        </div>
+      </div>
+
       <div v-if="events.length" class="mb-4">
-        <div class="mb-2 font-medium">变更事件（{{ events.length }}）</div>
+        <div class="mb-2 font-medium">变更操作记录（{{ events.length }} 条）</div>
+        <div class="mb-2 text-xs text-gray-500">
+          这是成功下发后的审计操作条数；资源净差异统计最终资源变化，文本差异统计 NGINX 配置行数，三者单位不同，不要求一一对应。
+        </div>
         <div class="flex flex-col gap-1.5">
           <div
             v-for="(ev, ix) in events"

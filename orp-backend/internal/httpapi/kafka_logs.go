@@ -36,7 +36,7 @@ type filebeatLogEvent struct {
 	Message   json.RawMessage `json:"message"`
 	LogType   string          `json:"orp_log_type"`
 	Timestamp string          `json:"@timestamp"`
-	ORP struct {
+	ORP       struct {
 		NodeName string `json:"node_name"`
 		NodeID   any    `json:"node_id"`
 	} `json:"orp"`
@@ -155,20 +155,23 @@ func runKafkaLogConsumer(ctx context.Context, db *sql.DB, config KafkaLogConfig)
 
 func persistKafkaLog(ctx context.Context, db *sql.DB, kafkaMessage kafka.Message, nodeIDs map[string]int64) error {
 	if len(kafkaMessage.Value) > maxKafkaLogMessageBytes {
-		return fmt.Errorf("message exceeds %d bytes", maxKafkaLogMessageBytes)
+		return persistKafkaLogRejection(ctx, db, kafkaMessage, "message_too_large")
 	}
 	var envelope filebeatLogEvent
 	if err := json.Unmarshal(kafkaMessage.Value, &envelope); err != nil {
-		return nil // Commit and skip malformed Filebeat envelopes to avoid blocking the partition.
+		return persistKafkaLogRejection(ctx, db, kafkaMessage, "invalid_json")
 	}
 	nodeName := strings.TrimSpace(envelope.ORP.NodeName)
 	logType := strings.ToLower(strings.TrimSpace(envelope.LogType))
-	if nodeName == "" || (logType != "access" && logType != "error") {
-		return nil
+	if nodeName == "" {
+		return persistKafkaLogRejection(ctx, db, kafkaMessage, "missing_node_name")
+	}
+	if logType != "access" && logType != "error" {
+		return persistKafkaLogRejection(ctx, db, kafkaMessage, "invalid_log_type")
 	}
 	message := strings.TrimSpace(rawMessage(envelope.Message))
 	if message == "" {
-		return nil
+		return persistKafkaLogRejection(ctx, db, kafkaMessage, "missing_message")
 	}
 	eventTime := time.Now()
 	if parsed, err := time.Parse(time.RFC3339Nano, envelope.Timestamp); err == nil {
@@ -185,8 +188,7 @@ func persistKafkaLog(ctx context.Context, db *sql.DB, kafkaMessage kafka.Message
 	var access accessEvent
 	if logType == "access" {
 		if err := json.Unmarshal([]byte(message), &access); err != nil {
-			logType = "error"
-			access = accessEvent{}
+			return persistKafkaLogRejection(ctx, db, kafkaMessage, "invalid_access_message")
 		}
 	}
 	var nodeID int64
@@ -211,6 +213,22 @@ func persistKafkaLog(ctx context.Context, db *sql.DB, kafkaMessage kafka.Message
 		access.Status, access.RT, access.Host, access.RemoteAddr, access.URI, access.Bytes, access.RequestBytes, message)
 	if err != nil {
 		return err
+	}
+	return nil
+}
+
+// persistKafkaLogRejection stores only bounded metadata. Kafka payloads can contain
+// client data and credentials, so rejected payloads must never be copied to this
+// table or included in returned errors/log messages.
+func persistKafkaLogRejection(ctx context.Context, db *sql.DB, message kafka.Message, reason string) error {
+	digest := sha256.Sum256(message.Value)
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	_, err := db.ExecContext(ctx, `INSERT IGNORE INTO orp_log_rejection
+		(kafka_topic,kafka_partition,kafka_offset,payload_bytes,payload_sha256,reason)
+		VALUES(?,?,?,?,?,?)`, message.Topic, message.Partition, message.Offset, len(message.Value), hex.EncodeToString(digest[:]), reason)
+	if err != nil {
+		return fmt.Errorf("persist rejected Kafka log metadata: %w", err)
 	}
 	return nil
 }

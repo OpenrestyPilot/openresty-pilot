@@ -5,12 +5,13 @@ import { computed, onUnmounted, ref } from 'vue';
 
 import { useVbenDrawer } from '@vben/common-ui';
 
-import { Alert, Button, message, Popconfirm, Progress, Tag } from 'ant-design-vue';
+import { Alert, Button, Input, message, Popconfirm, Progress, Tag } from 'ant-design-vue';
 
 import {
   abortPublishBatchApi,
   advancePublishBatchApi,
   getPublishBatchApi,
+  reconcileContinuePublishBatchApi,
 } from '#/api';
 
 defineOptions({ name: 'PublishProgressDrawer' });
@@ -19,6 +20,7 @@ const emit = defineEmits<{ closed: []; settled: [] }>();
 
 
 const batch = ref<null | PublishBatch>(null);
+const observedReleaseByItem = ref<Record<number, string>>({});
 let timer: null | ReturnType<typeof setInterval> = null;
 let batchId: null | number = null;
 const acting = ref(false);
@@ -45,6 +47,7 @@ const PHASE_MAP: Record<string, { color: string; text: string }> = {
   aborted: { color: 'error', text: '已中止' },
   canary_observing: { color: 'warning', text: '金丝雀观察期' },
   done: { color: 'success', text: '已完成' },
+  recovery_required: { color: 'error', text: '需要人工核对恢复' },
   running: { color: 'processing', text: '执行中' },
 };
 
@@ -55,6 +58,7 @@ const [Drawer, drawerApi] = useVbenDrawer<{ batchId?: number }>({
   onOpenChange(isOpen) {
     if (isOpen) {
       batch.value = null;
+      observedReleaseByItem.value = {};
       batchId = drawerApi.getData()?.batchId ?? null;
       if (batchId != null) {
         start(batchId);
@@ -107,6 +111,11 @@ const canaryOperable = computed(
 
 /** 权重分批模式 */
 const isWeighted = computed(() => batch.value?.mode === 'weighted');
+const recoveryItems = computed(() => batch.value?.items.filter((item) => item.requiresReconciliation) ?? []);
+const recoveryReady = computed(() => recoveryItems.value.length > 0 && recoveryItems.value.every((item) => {
+  const value = observedReleaseByItem.value[item.itemId]?.trim() ?? '';
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}));
 
 const nodeNameOf = (id: number) =>
   batch.value?.items.find((x) => x.nodeId === id)?.nodeName ?? `节点 ${id}`;
@@ -168,6 +177,25 @@ async function onAdvance() {
   }
 }
 
+/** Confirm field observations, then let the control plane probe and reconcile each recovery item. */
+async function onRecoveryContinue() {
+  if (batchId == null || acting.value || !recoveryReady.value) return;
+  acting.value = true;
+  try {
+    const confirmations = recoveryItems.value.map((item) => ({
+      itemId: item.itemId,
+      observedReleaseUuid: observedReleaseByItem.value[item.itemId]!.trim(),
+    }));
+    const result = await reconcileContinuePublishBatchApi(batchId, confirmations);
+    message.success(`已提交人工核对：${result.alreadyAppliedCount} 个已确认生效，${result.resumedCount} 个未开始目标恢复执行`);
+    await poll(batchId);
+  } catch {
+    // 权限和探针核对失败由统一请求拦截器说明；保留人工输入便于修正。
+  } finally {
+    acting.value = false;
+  }
+}
+
 onUnmounted(stop);
 </script>
 
@@ -204,6 +232,37 @@ onUnmounted(stop);
           :stroke-color="{ '0%': '#108ee9', '100%': '#87d068' }"
         />
       </div>
+
+      <Alert
+        v-if="batch.phase === 'recovery_required'"
+        class="mb-4"
+        message="控制面中断后需要逐节点人工核对"
+        show-icon
+        type="error"
+      >
+        <template #description>
+          <p class="mb-3">请在每个节点现场查看当前活动 release UUID 并逐项填写。提交后服务端会运行固定版本探针：已确认候选版本的节点记为成功，仍处于冻结基线的未开始任务才会继续；已开始但结果不明的任务不会重放。</p>
+          <div class="space-y-3">
+            <div v-for="item in recoveryItems" :key="item.itemId" class="rounded border border-red-200 p-3 dark:border-red-900">
+              <div class="mb-2 flex flex-wrap items-center gap-2"><strong>{{ item.nodeName }}（{{ item.centerName }}）</strong><Tag color="red">{{ STATUS_MAP[item.status]?.text ?? item.status }}</Tag><span class="text-xs text-gray-500">批次项 #{{ item.itemId }}</span></div>
+              <div v-if="item.error" class="mb-2 text-xs text-red-600">恢复原因：{{ item.error }}</div>
+              <Input v-model:value="observedReleaseByItem[item.itemId]" placeholder="现场读取当前活动 release UUID" autocomplete="off" />
+            </div>
+            <div v-if="recoveryItems.length === 0" class="text-sm text-red-600">服务端未返回待核对的批次项。请刷新批次状态；不会推断或补造恢复目标。</div>
+          </div>
+          <div class="mt-3 flex justify-end">
+            <Popconfirm
+              title="确认提交现场观察的版本并继续批次？"
+              description="服务端会逐节点探测并按核对结果标记已生效项或继续未开始项。"
+              ok-text="提交核对"
+              cancel-text="再检查一下"
+              @confirm="onRecoveryContinue"
+            >
+              <Button type="primary" danger :loading="acting" :disabled="!recoveryReady" v-access:code="'orp:publish'">提交核对并继续</Button>
+            </Popconfirm>
+          </div>
+        </template>
+      </Alert>
 
       <!-- 金丝雀观察等待期卡片 -->
       <Alert

@@ -52,9 +52,17 @@ WHERE i.id=? AND i.status='success'`, historyID).Scan(&nodeID, &centerID, &sourc
 		return
 	}
 	node := nodes[nodeID]
-	if err := demoNodeReady(r.Context(), node); err != nil {
-		orpFailure(w, 409, err.Error())
-		return
+	_, targetErr := targetForNode(node)
+	isAgent := targetErr != nil && nodeHasAgent(node)
+	if !isAgent {
+		if targetErr != nil {
+			orpFailure(w, 409, targetErr.Error())
+			return
+		}
+		if err := demoNodeReady(r.Context(), node); err != nil {
+			orpFailure(w, 409, err.Error())
+			return
+		}
 	}
 	actualCenter, _ := resourceNumber(node["centerId"])
 	if actualCenter != centerID {
@@ -66,10 +74,25 @@ WHERE i.id=? AND i.status='success'`, historyID).Scan(&nodeID, &centerID, &sourc
 		orpFailure(w, 409, "节点没有可核对的活动发布基线")
 		return
 	}
-	observed, err := observedDemoRelease(r.Context(), node)
-	if err != nil || observed != baseline.ReleaseUUID {
-		orpFailure(w, 409, "节点实际版本与发布基线不一致")
-		return
+	var baselineCandidateID int64
+	if isAgent {
+		if err := s.db.QueryRowContext(r.Context(), "SELECT id FROM orp_publish_candidate WHERE release_uuid=? AND status IN ('validated','frozen')", baseline.ReleaseUUID).Scan(&baselineCandidateID); err != nil {
+			orpFailure(w, 409, "无法找到当前 Agent 发布基线候选")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+		_, probeErr := s.probeAgentCandidate(ctx, nodeID, publishCandidate{ID: baselineCandidateID, ReleaseUUID: baseline.ReleaseUUID, CenterID: centerID}, actor)
+		cancel()
+		if probeErr != nil {
+			orpFailure(w, 409, "Agent 实际版本与发布基线不一致: "+probeErr.Error())
+			return
+		}
+	} else {
+		observed, err := observedDemoRelease(r.Context(), node)
+		if err != nil || observed != baseline.ReleaseUUID {
+			orpFailure(w, 409, "节点实际版本与发布基线不一致")
+			return
+		}
 	}
 	snapshot, err := snapshotConfig(raw)
 	if err != nil {
@@ -82,12 +105,17 @@ WHERE i.id=? AND i.status='success'`, historyID).Scan(&nodeID, &centerID, &sourc
 		orpFailure(w, 409, "历史配置无法渲染: "+err.Error())
 		return
 	}
-	target, err := targetForNode(node)
-	if err != nil {
-		orpFailure(w, 409, err.Error())
-		return
+	var nodeRelease orpRelease
+	if isAgent {
+		nodeRelease, err = renderReleaseForTarget(centerID, releaseID, snapshot.Resources, snapshot.Singletons, agentProbePort)
+	} else {
+		target, targetErr := targetForNode(node)
+		if targetErr != nil {
+			orpFailure(w, 409, targetErr.Error())
+			return
+		}
+		nodeRelease, err = renderDemoReleaseForTarget(centerID, releaseID, snapshot.Resources, snapshot.Singletons, target.healthPort)
 	}
-	nodeRelease, err := renderDemoReleaseForTarget(centerID, releaseID, snapshot.Resources, snapshot.Singletons, target.healthPort)
 	if err != nil {
 		orpFailure(w, 409, "无法为节点渲染回滚配置: "+err.Error())
 		return
@@ -129,10 +157,17 @@ WHERE i.id=? AND i.status='success'`, historyID).Scan(&nodeID, &centerID, &sourc
 		orpFailure(w, 500, "提交回滚候选失败")
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
-	output, checkErr := validateDemoRelease(ctx, node, releaseID, nodeRelease)
-	cancel()
+	var output string
+	var checkErr error
 	command := demoNginx + " -t -c " + demoConfigRoot + "/candidates/" + releaseID + "/nginx.conf"
+	if isAgent {
+		command = "Agent fixed validate operation (frozen release artifact)"
+		output, checkErr = s.validateAgentCandidate(r.Context(), nodeID, publishCandidate{ID: candidateID, ReleaseUUID: releaseID, CenterID: centerID, Status: "frozen"}, actor)
+	} else {
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		output, checkErr = validateDemoRelease(ctx, node, releaseID, nodeRelease)
+		cancel()
+	}
 	passed := checkErr == nil
 	if !passed {
 		output += "\n" + checkErr.Error()
@@ -164,6 +199,23 @@ WHERE i.id=? AND i.status='success'`, historyID).Scan(&nodeID, &centerID, &sourc
 		orpFailure(w, 500, "保存回滚校验状态失败")
 		return
 	}
+	// Probe before taking the node row lock. The Agent task creator locks this
+	// same row, so probing inside the batch transaction would self-deadlock.
+	if isAgent {
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
+		_, probeErr := s.probeAgentCandidate(ctx, nodeID, publishCandidate{ID: baselineCandidateID, ReleaseUUID: baseline.ReleaseUUID, CenterID: centerID}, actor)
+		cancel()
+		if probeErr != nil {
+			orpFailure(w, 409, "Agent 实际版本已变化: "+probeErr.Error())
+			return
+		}
+	} else {
+		observed, err := observedDemoRelease(r.Context(), node)
+		if err != nil || observed != baseline.ReleaseUUID {
+			orpFailure(w, 409, "节点实际版本已变化")
+			return
+		}
+	}
 	tx, err = s.db.BeginTx(r.Context(), nil)
 	if err != nil {
 		orpFailure(w, 500, "创建回滚批次失败")
@@ -185,11 +237,6 @@ WHERE i.id=? AND i.status='success'`, historyID).Scan(&nodeID, &centerID, &sourc
 	currentBaseline, err := s.lastPublishedNode(r.Context(), nodeID)
 	if err != nil || currentBaseline.ReleaseUUID != baseline.ReleaseUUID {
 		orpFailure(w, 409, "节点发布基线已变化")
-		return
-	}
-	observed, err = observedDemoRelease(r.Context(), node)
-	if err != nil || observed != baseline.ReleaseUUID {
-		orpFailure(w, 409, "节点实际版本已变化")
 		return
 	}
 	result, err = tx.ExecContext(r.Context(), "INSERT INTO orp_publish_batch(actor,mode,phase) VALUES(?,'all','running')", actor)

@@ -22,14 +22,16 @@ To enable external Node Agent heartbeats and fixed reload tasks, configure the A
 
 Runtime options (HTTP/Agent listeners, Redis, Kafka, CAPTCHA and GeoIP paths) are seeded into **系统配置** at startup. Their priority is explicit process environment/`.env` value > enabled database setting > built-in default. Database settings are snapshotted during startup, so changes take effect after restarting the control plane. Keep MySQL connection credentials, `ORP_ADMIN_PASSWORD`, and `ORP_DATA_KEY` in the environment: they are needed before or while connecting to the settings database and must not be stored there. `.env.example` shows optional runtime overrides commented out.
 
+Startup applies schema migrations only. It does not import business records from the previous project; the retained legacy importer is not called by the default startup path.
+
 ## Checks
 
 - `go test ./...`
 - `go vet ./...`
 - `go run ./cmd/openapi-check`
 
-The frontend maintains the client OpenAPI document and its own consistency check in the separate frontend project.
+The frontend maintains the client OpenAPI document and its consistency check in the separate frontend project. It currently covers 81 routed paths and 113 operations; all non-empty success responses declare schemas. Four read-only responses have been sampled against their schemas, but full runtime payload conformance remains unverified. Publish comparison reports center-scoped audit events since the selected node's last successful publish, that node's net resource changes against its publish snapshot, and rendered NGINX text-line changes as separate measures.
 
 ## Node operations
 
-The current publish adapter supports the fixed local Docker nodes supplied by `orp-quickstart` only. Agent heartbeat and standalone fixed reload task APIs are implemented, but certificate issuance/rotation, artifact transfer, target validation, and publish-batch integration remain future work.
+The publish path supports the fixed local Docker nodes supplied by `orp-quickstart` and enrolled Agents using the fixed non-root release profile. Agent artifacts, `validate`/`publish`/read-only `probe`, Canary observation, central history rollback, and operator-confirmed batch reconciliation are implemented. V44/V46 provide asynchronous immutable candidates, validation jobs, diffs, center concurrency policy, and management UI; V49 adds an explicit manual publish endpoint and optional default-off automatic publish after every frozen target passes validation. Root-master/helper release and other node topologies remain unsupported because the current task contract has no signed authorization or root-owned replay ledger. See `docs/frontend-backend-migration-status.md` for migration and production-acceptance boundaries.

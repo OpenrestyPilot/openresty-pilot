@@ -36,6 +36,17 @@ const routes: RouteRecordRaw[] = [
         path: 'perms',
         component: () => import('#/views/system/perm/index.vue'),
       },
+      {
+        meta: {
+          icon: 'lucide:key-square',
+          activeIcon: 'ph:key-fill',
+          order: 3,
+          title: 'API 调用方与密钥',
+        },
+        name: 'SystemConsumers',
+        path: 'api-consumers',
+        component: () => import('#/views/api-consumers/index.vue'),
+      },
     ],
     meta: {
       icon: 'lucide:settings',

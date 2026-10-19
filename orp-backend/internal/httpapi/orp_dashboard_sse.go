@@ -21,6 +21,7 @@ const (
 	// Dashboard snapshots are refreshed and pushed once per second for live views.
 	dashboardPushInterval      = time.Second
 	dashboardSnapshotTTL       = 30 * time.Second
+	dashboardRefreshInterval   = 5 * time.Second
 	dashboardRefreshQueue      = "orp:dashboard:refresh"
 	dashboardSnapshotCacheBase = "orp:dashboard:snapshot:"
 	dashboardPublicScreenUser  = "__public-screen__"
@@ -29,6 +30,7 @@ const (
 var errDashboardStreamUnauthorized = errors.New("dashboard event stream authorization expired")
 
 type dashboardSnapshotContextKey struct{}
+type dashboardFastSnapshotContextKey struct{}
 type publicScreenContextKey struct{}
 
 func isPublicScreenContext(ctx context.Context) bool {
@@ -43,6 +45,7 @@ type dashboardSnapshot struct {
 	Trends    json.RawMessage `json:"trends"`
 	Rankings  json.RawMessage `json:"rankings"`
 	UpdatedAt time.Time       `json:"updatedAt"`
+	Partial   bool            `json:"partial,omitempty"`
 }
 
 type dashboardSnapshotQueueItem struct {
@@ -57,44 +60,73 @@ type dashboardSnapshotEntry struct {
 	Ready    chan struct{}
 }
 
+type dashboardSnapshotMemoryEntry struct {
+	Snapshot dashboardSnapshot
+	CachedAt time.Time
+}
+
 var dashboardSnapshotFlights sync.Map
+var dashboardSnapshotMemory sync.Map
 
 func StartDashboardSnapshotWorker(ctx context.Context, database *sql.DB, client *redis.Client) {
 	if client == nil {
 		return
 	}
-	go func() {
-		for ctx.Err() == nil {
-			item, err := client.BLPop(ctx, 2*time.Second, dashboardRefreshQueue).Result()
-			if err != nil {
-				if ctx.Err() != nil {
-					return
+	for range 2 {
+		go func() {
+			for ctx.Err() == nil {
+				item, err := client.BLPop(ctx, 2*time.Second, dashboardRefreshQueue).Result()
+				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
+					if !errors.Is(err, redis.Nil) && !strings.Contains(err.Error(), "redis: nil") {
+						time.Sleep(time.Second)
+					}
+					continue
 				}
-				if !errors.Is(err, redis.Nil) && !strings.Contains(err.Error(), "redis: nil") {
-					time.Sleep(time.Second)
+				if len(item) != 2 {
+					continue
 				}
-				continue
-			}
-			if len(item) != 2 {
-				continue
-			}
-			var job dashboardSnapshotQueueItem
-			if json.Unmarshal([]byte(item[1]), &job) != nil || job.ExpiresAt < time.Now().Unix() {
-				continue
-			}
-			snapshot, buildErr := buildDashboardSnapshot(ctx, database, dashboardInputKey(job.Query), job.User)
-			if buildErr != nil {
-				log.Printf("dashboard snapshot refresh failed: %v", buildErr)
-			}
-			if buildErr == nil {
-				if payload, marshalErr := json.Marshal(snapshot); marshalErr == nil {
-					_ = client.Set(ctx, dashboardSnapshotKey(job.Query, job.User), payload, dashboardSnapshotTTL).Err()
-					_ = client.Publish(ctx, dashboardSnapshotKey(job.Query, job.User)+":updates", payload).Err()
+				var job dashboardSnapshotQueueItem
+				if json.Unmarshal([]byte(item[1]), &job) != nil || job.ExpiresAt < time.Now().Unix() {
+					continue
 				}
+				cacheKey := dashboardSnapshotKey(job.Query, job.User)
+				cached, cacheErr := client.Exists(ctx, cacheKey).Result()
+				if cacheErr == nil && cached == 0 {
+					started := time.Now()
+					partial, partialErr := buildDashboardSnapshotMode(ctx, database, dashboardInputKey(job.Query), job.User, true)
+					if time.Since(started) >= time.Second {
+						log.Printf("dashboard first snapshot query=%q partial=%t duration=%s", dashboardInputKey(job.Query), partialErr == nil, time.Since(started).Round(time.Millisecond))
+					}
+					if partialErr == nil {
+						if payload, marshalErr := json.Marshal(partial); marshalErr == nil {
+							_ = client.Set(ctx, cacheKey, payload, dashboardSnapshotTTL).Err()
+							_ = client.Publish(ctx, cacheKey+":updates", payload).Err()
+						}
+					} else {
+						log.Printf("dashboard fast snapshot failed: %v", partialErr)
+					}
+				}
+				started := time.Now()
+				snapshot, buildErr := buildDashboardSnapshot(ctx, database, dashboardInputKey(job.Query), job.User)
+				if time.Since(started) >= time.Second {
+					log.Printf("dashboard full snapshot query=%q duration=%s", dashboardInputKey(job.Query), time.Since(started).Round(time.Millisecond))
+				}
+				if buildErr != nil {
+					log.Printf("dashboard snapshot refresh failed: %v", buildErr)
+				}
+				if buildErr == nil {
+					if payload, marshalErr := json.Marshal(snapshot); marshalErr == nil {
+						_ = client.Set(ctx, dashboardSnapshotKey(job.Query, job.User), payload, dashboardSnapshotTTL).Err()
+						_ = client.Publish(ctx, dashboardSnapshotKey(job.Query, job.User)+":updates", payload).Err()
+					}
+				}
+				_ = client.Del(ctx, dashboardSnapshotKey(job.Query, job.User)+":queued").Err()
 			}
-			_ = client.Del(ctx, dashboardSnapshotKey(job.Query, job.User)+":queued").Err()
-		}
-	}()
+		}()
+	}
 }
 
 func (s *Server) orpDashboardEvents(w http.ResponseWriter, r *http.Request) {
@@ -114,6 +146,10 @@ func (s *Server) orpDashboardEvents(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = fmt.Fprint(w, "retry: 3000\n\n")
 	flusher.Flush()
+	// Let the client know the stream is established before Redis reads or the
+	// first snapshot build, which can take longer while cold.
+	writeDashboardPending(w)
+	flusher.Flush()
 
 	query, authorization := dashboardInputKey(r.URL.RawQuery), r.Header.Get("Authorization")
 	var updates <-chan *redis.Message
@@ -128,10 +164,10 @@ func (s *Server) orpDashboardEvents(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			writeDashboardStreamError(w, err)
 		} else if found {
+			s.enqueueDashboardRefresh(r.Context(), query, user)
 			writeDashboardSnapshot(w, snapshot)
 		} else {
 			s.enqueueDashboardRefresh(r.Context(), query, user)
-			writeDashboardPending(w)
 		}
 	} else {
 		snapshot, err := s.dashboardSnapshot(r.Context(), query, user)
@@ -354,12 +390,30 @@ func (s *Server) dashboardSnapshot(ctx context.Context, query, user string) (das
 		}
 	}
 	flightKey := dashboardSnapshotKey(query, user)
+	if s.redis == nil {
+		if cached, ok := dashboardSnapshotMemory.Load(flightKey); ok {
+			entry := cached.(dashboardSnapshotMemoryEntry)
+			if time.Since(entry.CachedAt) < dashboardRefreshInterval {
+				return entry.Snapshot, nil
+			}
+		}
+	}
 	entryAny, loaded := dashboardSnapshotFlights.LoadOrStore(flightKey, &dashboardSnapshotEntry{Ready: make(chan struct{})})
 	entry := entryAny.(*dashboardSnapshotEntry)
 	if !loaded {
 		entry.Snapshot, entry.Err = buildDashboardSnapshot(ctx, s.db, query, user)
 		close(entry.Ready)
 		dashboardSnapshotFlights.Delete(flightKey)
+		if entry.Err == nil && s.redis == nil {
+			cachedAt := time.Now()
+			dashboardSnapshotMemory.Store(flightKey, dashboardSnapshotMemoryEntry{Snapshot: entry.Snapshot, CachedAt: cachedAt})
+			dashboardSnapshotMemory.Range(func(key, value any) bool {
+				if cached, ok := value.(dashboardSnapshotMemoryEntry); ok && cachedAt.Sub(cached.CachedAt) >= dashboardSnapshotTTL {
+					dashboardSnapshotMemory.Delete(key)
+				}
+				return true
+			})
+		}
 		if entry.Err == nil && s.redis != nil {
 			cacheCtx, cancel := context.WithTimeout(context.Background(), time.Second)
 			if payload, err := json.Marshal(entry.Snapshot); err == nil {
@@ -403,14 +457,28 @@ func (s *Server) enqueueDashboardRefresh(ctx context.Context, query, user string
 	body, _ := json.Marshal(job)
 	queueCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
 	defer cancel()
+	refreshWindow := key + ":refresh-window"
+	allowed, err := s.redis.SetNX(queueCtx, refreshWindow, "1", dashboardRefreshInterval).Result()
+	if err != nil || !allowed {
+		return
+	}
 	created, err := s.redis.SetNX(queueCtx, key+":queued", "1", dashboardSnapshotTTL).Result()
 	if err == nil && created {
-		_ = s.redis.RPush(queueCtx, dashboardRefreshQueue, body).Err()
+		if err := s.redis.RPush(queueCtx, dashboardRefreshQueue, body).Err(); err != nil {
+			_ = s.redis.Del(queueCtx, key+":queued").Err()
+		}
 	}
 }
 
 func buildDashboardSnapshot(ctx context.Context, database *sql.DB, query, user string) (dashboardSnapshot, error) {
+	return buildDashboardSnapshotMode(ctx, database, query, user, false)
+}
+
+func buildDashboardSnapshotMode(ctx context.Context, database *sql.DB, query, user string, fast bool) (dashboardSnapshot, error) {
 	ctx = context.WithValue(ctx, dashboardSnapshotContextKey{}, &dashboardInputCache{values: map[string]dashboardInput{}})
+	if fast {
+		ctx = context.WithValue(ctx, dashboardFastSnapshotContextKey{}, true)
+	}
 	if user == dashboardPublicScreenUser {
 		ctx = context.WithValue(ctx, publicScreenContextKey{}, true)
 	}
@@ -451,7 +519,7 @@ func buildDashboardSnapshot(ctx context.Context, database *sql.DB, query, user s
 	if err != nil {
 		return dashboardSnapshot{}, err
 	}
-	return dashboardSnapshot{Metrics: metrics, Trends: trends, Rankings: rankings, UpdatedAt: time.Now()}, nil
+	return dashboardSnapshot{Metrics: metrics, Trends: trends, Rankings: rankings, UpdatedAt: time.Now(), Partial: fast}, nil
 }
 
 func writeDashboardSnapshot(w http.ResponseWriter, snapshot dashboardSnapshot) {

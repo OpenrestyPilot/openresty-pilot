@@ -14,6 +14,7 @@ export interface DashboardEventSnapshot {
   rankings: DashboardTopRankings;
   trends: DashboardTrends;
   updatedAt: string;
+  partial?: boolean;
 }
 
 /** Consume authenticated server-sent dashboard snapshots until aborted or disconnected. */
@@ -22,6 +23,7 @@ export async function consumeDashboardEvents(
   signal: AbortSignal,
   onSnapshot: (snapshot: DashboardEventSnapshot) => void,
   onError: (message: string) => void,
+  onPending: () => void,
 ): Promise<void> {
   const accessToken = useAccessStore().accessToken;
   const query = new URLSearchParams();
@@ -65,6 +67,7 @@ export async function consumeDashboardEvents(
       if (data.length > 0) {
         const payload = data.join('\n');
         if (event === 'dashboard') onSnapshot(JSON.parse(payload) as DashboardEventSnapshot);
+        else if (event === 'dashboard-pending') onPending();
         else if (event === 'dashboard-auth-error') {
           await redirectToLoginOnUnauthorized();
           throw new Error('登录状态已失效，正在跳转登录页');

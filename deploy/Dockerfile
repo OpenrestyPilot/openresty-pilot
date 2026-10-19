@@ -2,6 +2,8 @@ FROM node:24-alpine AS frontend-build
 RUN corepack enable && corepack prepare pnpm@11.16.0 --activate
 WORKDIR /src/orp-frontend
 COPY orp-frontend/ ./
+ARG VITE_ORP_SCREEN_URL
+ENV VITE_ORP_SCREEN_URL=${VITE_ORP_SCREEN_URL}
 ENV VITE_ARCHIVER=false
 RUN CI=true pnpm install --frozen-lockfile \
  && pnpm --filter @vben/web-antd build
