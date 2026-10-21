@@ -1,10 +1,10 @@
 # Go 控制面后端功能盘点
 
-更新日期：2026-10-19。
+更新日期：2026-10-21。
 
 ## 结论
 
-本地 Compose 演示闭环已覆盖资源管理、认证/RBAC、配置渲染与校验、三节点分批发布、回滚、观测、日志和审计；异步候选及策略管理界面、受限 Agent Canary/历史回滚/人工恢复接口和完整成功响应 schema 已接入。2026-10-18 在独立服务器部署非 root Agent 节点，验证了远端候选 `nginx -t`、批次发布和中央历史回滚；该次为单目标验证，没有覆盖多节点 Canary 观察门槛或重启恢复。随后在 `8.137.113.9` 部署公网 IP 验收服务，通过现有 18443 TLS 网关完成真实外部请求，确认节点收到网关转发的公网客户端 IP，City MMDB 可解析国家、城市和坐标。用户报告该请求未驱动控制面大盘、实时日志和大屏。复核发现该独立服务器原先没有 Kafka/Filebeat，控制面 Kafka bootstrap 配置为空，访问记录只写在节点本地文件。为修复链路，本轮在服务器增加了回环 Kafka broker、设置控制面 Kafka 地址并启动 consumer；之前调整节点日志容器时出现端口冲突；2026-10-19 复核已恢复并验证专用公网 IP 路径：GET 返回 200，公开大屏 SSE 的 GeoIP 状态为 ready 且含定位点，快照按秒推进。这为该专用路由建立了日志到大屏 SSE 的端到端证据；实时日志 SSE、多业务路由覆盖、积压/故障恢复与容量仍未完成。配置比对已分开展示审计操作数、发布后的资源净差异数和渲染文本增删行数。旧系统数据迁移不属于本项目发布完成条件：项目尚未正式发布，既有导入代码仅作为可选兼容路径保留，不要求为历史旧库补齐映射。当前主要未闭环项是 root-master/helper 与其他拓扑支持、多节点 Canary 观察门槛、Agent/控制面重启恢复、独立部署的 Filebeat→Kafka→MySQL→GeoIP/API/SSE 日志链路、生产 Kafka 运维和全量运行时 OpenAPI 契约验收。2026-10-18 本地 OpenAPI 静态检查与服务可用性检查通过；独立公网部署已在 TCP 18443/18444 完成外部连通、控制台健康、大屏页面和登录配置脱敏检查。该部署验证基础安装与访问，不代表已完成生产级安全、容量、高可用或真实业务验收。
+本地 Compose 演示闭环已覆盖资源管理、认证/RBAC、配置渲染与校验、三节点分批发布、回滚、观测、日志和审计；异步候选及策略管理界面、受限 Agent Canary/历史回滚/人工恢复接口和完整成功响应 schema 已接入。2026-10-18 在独立服务器部署非 root Agent 节点，验证了远端候选 `nginx -t`、批次发布和中央历史回滚；该次为单目标验证，没有覆盖多节点 Canary 观察门槛或重启恢复。随后在 `8.137.113.9` 部署公网 IP 验收服务，通过现有 18443 TLS 网关完成真实外部请求，确认节点收到网关转发的公网客户端 IP，City MMDB 可解析国家、城市和坐标。2026-10-19 复核验证专用公网 IP 路径：GET 返回 200，公开大屏 SSE 的 GeoIP 状态为 ready 且含定位点，快照按秒推进。这为该专用路由建立了日志到大屏 SSE 的端到端证据；实时日志 SSE、多业务路由覆盖、积压/故障恢复与容量仍未完成。2026-10-21 在 `104.223.120.245` 新部署固定非 root OpenResty/Agent profile，控制面收到该节点心跳并显示在线；该节点与 `192.168.100.6` 形成两个当前在线的 Agent 节点，但尚未执行跨节点 Canary、批次发布或故障恢复验收。配置比对已分开展示审计操作数、发布后的资源净差异数和渲染文本增删行数。旧系统数据迁移不属于本项目发布完成条件：项目尚未正式发布，既有导入代码仅作为可选兼容路径保留，不要求为历史旧库补齐映射。当前主要未闭环项是 root-master/helper 与其他拓扑支持、多节点 Canary 观察门槛、Agent/控制面重启恢复、独立部署的 Filebeat→Kafka→MySQL→GeoIP/API/SSE 日志链路、生产 Kafka 运维和全量运行时 OpenAPI 契约验收。2026-10-18 本地 OpenAPI 静态检查与服务可用性检查通过；独立公网部署已在 TCP 18443/18444 完成外部连通、控制台健康、大屏页面和登录配置脱敏检查。该部署验证基础安装和节点在线，不代表已完成生产级安全、容量、高可用或真实业务验收。
 
 ## 2026-10-19 两台服务器复核
 
@@ -13,7 +13,16 @@
 - 控制面数据库中的 Agent 心跳记录同时显示节点 21、23 最近数秒内收到心跳，证明两台机器上的 Agent 当前可同时连接控制面。该证据只证明在线与心跳，不构成多节点发布验收。
 - 节点 23 的 Agent 配置仍使用 `/etc/orp-node-agent/nginx.conf`，`releaseRoot` 为空且 `probePort` 为 0，因此它不符合候选 `validate`/`publish` 所需的固定非 root profile。该节点不能加入 Agent Canary、候选发布或发布回滚目标。当前只有节点 21 具备已验证的 Agent 发布 profile。
 - 公网路径 `https://8.137.113.9:18443/__orp/public-ip-check` 返回 HTTP 200；随后读取公开 SSE `/api/public/screens/events` 得到 HTTP 200，样本显示 GeoIP `ready`、1 个定位点，快照 `updatedAt` 按秒推进。此结果仅覆盖专用公网 IP 验证路径，不代表所有业务日志、生产队列故障恢复或容量已验收。
-- 因缺少第二个已登记且具有固定发布 profile 的 Agent 目标，本轮没有执行双节点候选 Canary、跨节点发布或回滚。控制面管理 API 登录凭据验证返回 401；没有绕过 RBAC 直接写数据库。完整双节点发布验收仍需提供有效的管理员会话/凭据，或先将节点 23 安全迁移至受支持 profile 并纳入候选目标。
+- 因缺少第二个已登记且具有固定发布 profile 的 Agent 目标，本轮（2026-10-19）没有执行双节点候选 Canary、跨节点发布或回滚。控制面管理 API 登录凭据验证返回 401；没有绕过 RBAC 直接写数据库。该历史结论已由 2026-10-21 新增节点在线结果更新；双节点发布验收仍待执行。
+
+## 2026-10-21 新增节点验收
+
+- 在控制面“公网 IP 验收中心·成都”登记 `agent-node-104-223-120-245`，节点 ID 为 25、Agent ID 为 `node-25`，并为该节点单独签发 Token。原始 Token 只用于目标主机配置，不写入本文档。
+- 部署前修复前端权限指令未识别后端超级管理员 `*` 通配权限的问题；重新构建并部署控制面后，管理员可见“注册节点”和“快速接入”操作，节点登记与 Token 签发成功。
+- 目标系统为 AlmaLinux 10.2 x86_64。由于该发行版版本不在 OpenResty 官方二进制包支持列表内，本次从 OpenResty 1.31.1.1 官方源码构建并验证 `openresty -V`；Agent 二进制 SHA-256 为 `986bc6735ac37945a16a5b4e148982d941e8c49c98278812bd430c5da9a853f4`。
+- OpenResty 与 Agent 均由 `orp-agent` 非 root 用户运行，发布根目录为 `/etc/openresty/generated`，活动配置为 `active/nginx.conf`，固定版本探针为回环 `127.0.0.1:18080/__orp/release`。目标机仅保留 SSH `22/tcp` 与回环 `18080/tcp` 监听；没有新增或占用公网 80/443 端口。
+- Agent 通过已校验的控制面证书连接 `https://8.137.113.9:18443`；网关访问日志记录该源地址的心跳 `POST /api/agent/v1/heartbeat` 返回 204，以及固定任务轮询返回 204。控制台刷新后节点状态为“在线”。目标机本地版本探针正常返回初始 release UUID，`orp-openresty.service` 与 `orp-node-agent.service` 均为 active。
+- 该公网链路 TLS 握手实测约 8.5 秒，因此 Agent 配置将 `httpTimeoutSeconds` 设为 60。首次部署时出现过由 systemd 启动顺序/运行目录造成的瞬时服务失败，随后修复并复查服务稳定运行。尚未在该节点执行候选 `validate`、`publish`、Canary、中央回滚或重启恢复；当前证据只证明服务安装、本机探针、HTTPS 凭据认证与心跳在线。
 
 用户已启动“完整 API 网关能力”补齐工作。阶段与验收标准见 [`api-gateway-roadmap.md`](api-gateway-roadmap.md)。2026-10-19 本轮把允许 HTTP 方法与路由级限流接入 Quickstart 路由抽屉、前端类型和 OpenAPI 契约；配置由 `/api/orp/http-listeners` 保存至 `orp_resource`，进入候选/发布器使用的同一资源模型。后端校验方法枚举及限流范围，渲染 `limit_except`、`limit_req_zone` 与 `limit_req`；限流默认关闭以维持现有行为。本地构建通过；目标 `nginx -t` 和真实 GET/POST/超限请求行为尚未验收，旧 `/api/centers/{centerID}/http-servers` 表模型仍为独立兼容面。完整 API 网关仍未完成。
 
@@ -35,7 +44,7 @@
 | 配置比对统计 | 已区分三种统计口径 | 操作记录是中心范围内、从所选节点最近一次成功下发时间起的审计事件；资源净差异按该节点最近成功发布的冻结快照对比当前中心资源；文本增删行数对比该节点运行配置与最终渲染配置。范围与单位不同，不要求数值相等。首发前没有资源快照基线，只展示初始配置文本差异。 |
 | ADR-0015 异步候选与发布 | 支持固定目标，非通用 | V44/V46、候选 API、attempt/job 持久化、租约/公平调度和失败重试已接入。Worker 对固定 Quickstart 节点执行候选目录 `nginx -t`，对目标快照含已登记 Agent 的异地节点复用固定 `validate` task/artifact API。候选冻结时保存逐节点版本/摘要及语义、文本 Diff；每中心 `maxInflight` 有 RBAC、审计与跨实例限额。候选管理、Diff、中心策略已有界面。候选默认只校验；创建时可显式启用“所有目标通过后自动发布”，或通过 `orp:publish` 手动触发。V49 关联发布批次并用 DB lease 防重复创建；发起前重新核验权限、配置、节点身份和冻结基线。非 Quickstart 无 Agent、root-master/helper、原生指令及其他拓扑会明确失败。 |
 | 进程中断恢复 | 有限、安全优先恢复 | V47 持久化 Agent task→batch/item 关联。控制面重启后取消未领取任务，可信成功结果可记为成功；存在未开始或结果未知项的批次进入 `recovery_required`。`POST /api/orp/publish/batches/{id}/reconcile-continue` 要求逐项提交人工观察 UUID，并由本地固定探针或 Agent 固定 `probe` 再核对：只接受该冻结候选 UUID 或通过预检记录的基线 UUID。批次详情返回真实 item ID 和服务器计算的 `requiresReconciliation`；进度抽屉只为这些项目收集人工观察 UUID。已开始但仍在基线的失败项只标为跳过，绝不重放；仅原未开始项在目标身份未变化、候选仍已校验且活动版本仍等于冻结基线时重新入队。缺少基线、探针不匹配、候选失效或身份变化时拒绝续跑。尚待真实 Agent/MySQL 重启场景验收。 |
-| 节点 Agent | 受限 profile 已有独立部署验收 | 独立 HTTPS listener 支持心跳、固定 reload、候选制品读取、`validate`/`publish`/`probe` 任务及幂等结果回报。`probe` 仅读取固定本机 release endpoint，并核对从冻结候选派生的 UUID；候选发布限固定非 root profile。2026-10-18 已在隔离 Docker 容器部署节点 21，控制面节点状态在线；候选校验、发布和历史回滚成功。同日在 `8.137.113.9` 部署节点 23，Agent 在线，专用 OpenResty 只监听回环 `127.0.0.1:18085`。证书签发/轮换仍由外部运维管理，Agent 状态 UI、多节点 Canary/恢复和其他拓扑验收仍缺。 |
+| 节点 Agent | 受限 profile 已有独立部署验收 | 独立 HTTPS listener 支持心跳、固定 reload、候选制品读取、`validate`/`publish`/`probe` 任务及幂等结果回报。`probe` 仅读取固定本机 release endpoint，并核对从冻结候选派生的 UUID；候选发布限固定非 root profile。2026-10-18 已在隔离 Docker 容器部署节点 21，控制面节点状态在线；候选校验、发布和历史回滚成功。节点 23 在 `8.137.113.9` 在线，但使用旧配置且仅监听回环 `127.0.0.1:18085`，不满足固定发布 profile。2026-10-21 在 `104.223.120.245` 部署节点 25，采用固定非 root profile，Agent 心跳在线；该节点尚未执行候选校验、发布、Canary 或回滚。多节点 Canary/恢复、root-master/helper 和其他拓扑仍未验收。 |
 | 监控与大屏 | 已实现（本地数据源） | 节点指标 REST 与单节点 1 秒 SSE、健康样本、延迟历史、大盘 REST/SSE；独立大屏提供世界及 23 个行政区的 2D/3D 卡片、名称/代码搜索、亮暗主题和地图下钻。来源点与流线依赖 GeoIP 公网请求数据。Redis 可用于快照缓存和生成队列，不是配置权威；生产容量、告警 SLO 和高可用尚未验收。 |
 | 日志 | 本地链路已实现，生产运维有验收文档 | Filebeat 配置独立持久化 registry/磁盘队列及可配置队列上限、Kafka ACK；控制面 consumer 将超限/无效 envelope 的 topic/partition/offset、字节数、SHA-256 和固定原因码写入拒绝表，只有拒绝元数据落库后才提交 offset，避免 poison message 无限阻塞。原始拒绝 payload 不存储，拒绝记录目前没有 UI/API；生产容量、保留、归档与故障注入仍须按 [`kafka-log-operations.md`](kafka-log-operations.md) 和 Quickstart [`LOG-OPERATIONS.md`](../../../orp-quickstart/deploy/LOG-OPERATIONS.md) 完成目标环境验收。 |
 | GeoIP | 专用公网 IP 验证路径实时链路已验收；其他日志来源仍待验证 | 服务器 City MMDB 解码、`/__orp/public-ip-check` 的公网访问日志、Filebeat→Redpanda→MySQL→大屏 SSE 闭环已通过单请求验收：数据库事件数由 4 增至 5、consumer lag 为 0，SSE 快照显示 1 个请求和 1 个 GeoIP 点。该服务器新增 JSON access log 和独立 Filebeat 容器，仅采集此专用路径；不表示所有 gateway 访问日志、生产保留/容量/故障恢复均已验收。数据库文件被 `.gitignore` 排除；DB-IP City Lite 地图显示 CC BY 4.0 来源链接。详见 [`geoip-operations.md`](geoip-operations.md) 与 [`kafka-log-operations.md`](kafka-log-operations.md)。 |

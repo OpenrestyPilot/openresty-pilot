@@ -29,6 +29,12 @@ function useAccess() {
   function hasAccessByCodes(codes: string[]) {
     const userCodesSet = new Set(accessStore.accessCodes);
 
+    // The backend uses `*` for the built-in super-admin role. Treat it as a
+    // wildcard here so guarded controls match the role's effective privileges.
+    if (userCodesSet.has('*')) {
+      return true;
+    }
+
     const intersection = codes.filter((item) => userCodesSet.has(item));
     return intersection.length > 0;
   }
